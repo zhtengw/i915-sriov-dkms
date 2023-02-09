@@ -1,7 +1,7 @@
-# Linux i915 driver with SR-IOV support (dkms module) for linux 6.1 only
+# Linux i915 driver with SR-IOV support (dkms module) for linux 6.2 only
 
 Originally from [linux-intel-lts](https://github.com/intel/linux-intel-lts/tree/lts-v5.15.49-adl-linux-220826T092047Z/drivers/gpu/drm/i915)
-Update to [5.15.71](https://github.com/intel/linux-intel-lts/tree/lts-v5.15.71-adl-linux-221121T044440Z/drivers/gpu/drm/i915)
+Update to [5.15.86](https://github.com/intel/linux-intel-lts/tree/lts-v5.15.86-linux-230131T143409Z/drivers/gpu/drm/i915)
 
 ## Notice
 
@@ -13,8 +13,7 @@ For Arch Linux users, it is available in AUR. [i915-sriov-dkms-git](https://aur.
 
 Tested kernel versions: 
 
-* `pve-kernel-6.1.0-1-pve` on PVE VM Host
-* `gentoo-sources-6.1.0-gentoo` on Gentoo VM Guest
+* `linux-6.2.0-rc7` on Gentoo VM Guest
 
 Tested usages:
 
