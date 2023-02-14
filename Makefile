@@ -359,7 +359,6 @@ i915-$(CONFIG_DRM_I915_GVT) += \
        intel_gvt_mmio_table.o
 
 obj-$(CONFIG_DRM_I915)           += i915.o
-obj-$(CONFIG_DRM_I915_GVT_KVMGT) += kvmgt.o
 
 CFLAGS_i915_trace_points.o := -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915
 
@@ -376,8 +375,7 @@ i915-y := $(addprefix $(DRMD)i915/,$(i915-y))
 
 LINUXINCLUDE := \
     -I$(INC_INCPATH)/trace \
-	-I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915 \
-    -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915/gvt \
+    -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915 \
     $(LINUXINCLUDE)
 
 obj-m := i915.o
