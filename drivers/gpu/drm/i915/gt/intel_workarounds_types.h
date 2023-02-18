@@ -15,9 +15,7 @@ struct i915_wa {
 	u32		clr;
 	u32		set;
 	u32		read;
-
-	u32		masked_reg:1;
-	u32		is_mcr:1;
+	bool		masked_reg;
 };
 
 struct i915_wa_list {

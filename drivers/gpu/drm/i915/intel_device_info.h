@@ -120,9 +120,6 @@ enum intel_platform {
 /* ADL */
 #define INTEL_SUBPLATFORM_RPL	0
 
-/* ADL-S */
-#define INTEL_SUBPLATFORM_RPL_S	0
-
 /* ADL-P */
 /*
  * As #define INTEL_SUBPLATFORM_RPL 0 will apply

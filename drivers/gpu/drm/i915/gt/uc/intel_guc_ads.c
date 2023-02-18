@@ -59,7 +59,7 @@ struct __guc_ads_blob {
 	struct guc_gt_system_info system_info;
 	struct guc_engine_usage engine_usage;
 	/* From here on, location is dynamic! Refer to above diagram. */
-	struct guc_mmio_reg regset[0];
+	struct guc_mmio_reg regset[];
 } __packed;
 
 #define ads_blob_read(guc_, field_)					\
@@ -372,11 +372,8 @@ static int guc_mmio_regset_init(struct temp_regset *regset,
 					false);
 
 	/* add in local MOCS registers */
-	for (i = 0; i < LNCFCMOCS_REG_COUNT; i++)
-		if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50))
-			ret |= GUC_MMIO_REG_ADD(gt, regset, XEHP_LNCFCMOCS(i), false);
-		else
-			ret |= GUC_MMIO_REG_ADD(gt, regset, GEN9_LNCFCMOCS(i), false);
+	for (i = 0; i < GEN9_LNCFCMOCS_REG_COUNT; i++)
+		ret |= GUC_MMIO_REG_ADD(gt, regset, GEN9_LNCFCMOCS(i), false);
 
 	return ret ? -1 : 0;
 }
