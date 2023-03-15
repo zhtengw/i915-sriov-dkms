@@ -63,11 +63,10 @@ echo "Kernel source ${KERNAME} prepared."
 #sha256sum bzimage > bzimage.sha256
 #
 # Extract bzmodules with squashfs-tools-ng
-#cp -r /lib/modules/${KERVERUR} tmpmodules
 #rdsquashfs -q -u / -p tmpmodules bzmodules
 # 
 # Generate new bzmodules with squashfs-tools-ng
 #
-#cp -r /lib/modules/5.19.17-Unraid tmpmodules 
+#cp -r /lib/modules/${KERVERUR} tmpmodules 
 #gensquashfs -q -D tmpmodules  bzmodules
 #sha256sum bzmodules > bzmodules.sha256
