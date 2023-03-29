@@ -472,7 +472,7 @@ static void i915_driver_mmio_release(struct drm_i915_private *dev_priv)
 
 static void intel_sanitize_options(struct drm_i915_private *dev_priv)
 {
-	// intel_gvt_sanitize_options(dev_priv);
+	intel_gvt_sanitize_options(dev_priv);
 }
 
 /**
@@ -639,9 +639,9 @@ static int i915_driver_hw_probe(struct drm_i915_private *dev_priv)
 			drm_dbg(&dev_priv->drm, "can't enable MSI");
 	}
 
-	// ret = intel_gvt_init(dev_priv);
-	// if (ret)
-	// 	goto err_msi;
+	ret = intel_gvt_init(dev_priv);
+	if (ret)
+		goto err_msi;
 
 	intel_opregion_setup(dev_priv);
 
@@ -827,8 +827,6 @@ i915_driver_create(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 static void i915_virtualization_probe(struct drm_i915_private *i915)
 {
-	dev_info(i915->drm.dev, "i915_virtualization_probe: entry\n");
-
 	GEM_BUG_ON(i915->__mode);
 
 	intel_vgpu_detect(i915);
@@ -836,8 +834,6 @@ static void i915_virtualization_probe(struct drm_i915_private *i915)
 		i915->__mode = I915_IOV_MODE_GVT_VGPU;
 	else
 		i915->__mode = i915_sriov_probe(i915);
-
-	dev_info(i915->drm.dev, "i915_sriov_probe returns: %d\n", i915->__mode);
 
 	GEM_BUG_ON(!i915->__mode);
 
@@ -1002,7 +998,7 @@ void i915_driver_remove(struct drm_i915_private *i915)
 
 	i915_gem_suspend(i915);
 
-	// intel_gvt_driver_remove(i915);
+	intel_gvt_driver_remove(i915);
 
 	intel_modeset_driver_remove(i915);
 
@@ -1384,7 +1380,7 @@ static int i915_drm_resume(struct drm_device *dev)
 
 	intel_power_domains_enable(dev_priv);
 
-	// intel_gvt_resume(dev_priv);
+	intel_gvt_resume(dev_priv);
 
 	enable_rpm_wakeref_asserts(&dev_priv->runtime_pm);
 

@@ -364,7 +364,6 @@ obj-$(CONFIG_DRM_I915) += i915.o
 obj-$(CONFIG_DRM_I915_GVT_KVMGT) += gvt/kvmgt.o
 
 # header test
-CFLAGS_i915_trace_points.o := -I$(src)
 
 # exclude some broken headers from the test coverage
 no-header-test := \
