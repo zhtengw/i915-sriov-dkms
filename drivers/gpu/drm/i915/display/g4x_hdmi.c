@@ -10,6 +10,7 @@
 #include "intel_connector.h"
 #include "intel_crtc.h"
 #include "intel_de.h"
+#include "intel_display_power.h"
 #include "intel_display_types.h"
 #include "intel_dpio_phy.h"
 #include "intel_fifo_underrun.h"
@@ -119,7 +120,7 @@ static void intel_hdmi_get_config(struct intel_encoder *encoder,
 	pipe_config->hw.adjusted_mode.flags |= flags;
 
 	if ((tmp & SDVO_COLOR_FORMAT_MASK) == HDMI_COLOR_FORMAT_12bpc)
-		dotclock = pipe_config->port_clock * 2 / 3;
+		dotclock = DIV_ROUND_CLOSEST(pipe_config->port_clock * 2, 3);
 	else
 		dotclock = pipe_config->port_clock;
 
@@ -574,7 +575,7 @@ void g4x_hdmi_init(struct drm_i915_private *dev_priv,
 	intel_encoder->shutdown = intel_hdmi_encoder_shutdown;
 
 	intel_encoder->type = INTEL_OUTPUT_HDMI;
-	intel_encoder->power_domain = intel_port_to_power_domain(port);
+	intel_encoder->power_domain = intel_display_power_ddi_lanes_domain(dev_priv, port);
 	intel_encoder->port = port;
 	if (IS_CHERRYVIEW(dev_priv)) {
 		if (port == PORT_D)

@@ -1,4 +1,4 @@
-KVER        := $(shell uname -r)
+KVER        ?= $(shell uname -r)
 KBASE       := /lib/modules/$(KVER)
 KSRC        := $(KBASE)/source
 KBUILD      := $(KBASE)/build
@@ -6,6 +6,23 @@ MOD_DIR     := $(KBASE)/kernel
 
 INC_INCPATH := $(KBUILD_EXTMOD)/include
 DRMD        := drivers/gpu/drm/
+
+# Function for kernel version check
+KMAJ = $(shell echo $(KVER) | \
+sed -e 's/^\([0-9][0-9]*\)\.[0-9][0-9]*\.[0-9][0-9]*.*/\1/')
+KMIN = $(shell echo $(KVER) | \
+sed -e 's/^[0-9][0-9]*\.\([0-9][0-9]*\)\.[0-9][0-9]*.*/\1/')
+KREV = $(shell echo $(KVER) | \
+sed -e 's/^[0-9][0-9]*\.[0-9][0-9]*\.\([0-9][0-9]*\).*/\1/')
+
+kver_ge = $(shell \
+echo test | awk '{if($(KMAJ) < $(1)) {print 0} else { \
+if($(KMAJ) > $(1)) {print 1} else { \
+if($(KMIN) < $(2)) {print 0} else { \
+if($(KMIN) > $(2)) {print 1} else { \
+if($(KREV) < $(3)) {print 0} else { print 1 } \
+}}}}}' \
+)
 
 # ----------------------------------------------------------------------------
 # i915 module - copied from drivers/gpu/drm/i915/Makefile
@@ -91,12 +108,14 @@ gt-y += \
 	gt/intel_execlists_submission.o \
 	gt/intel_ggtt.o \
 	gt/intel_ggtt_fencing.o \
+	gt/intel_ggtt_gmch.o \
 	gt/intel_gt.o \
 	gt/intel_gt_buffer_pool.o \
 	gt/intel_gt_clock_utils.o \
 	gt/intel_gt_debugfs.o \
 	gt/intel_gt_engines_debugfs.o \
 	gt/intel_gt_irq.o \
+	gt/intel_gt_mcr.o \
 	gt/intel_gt_pm.o \
 	gt/intel_gt_pm_debugfs.o \
 	gt/intel_gt_pm_irq.o \
@@ -116,6 +135,7 @@ gt-y += \
 	gt/intel_ring.o \
 	gt/intel_ring_submission.o \
 	gt/intel_rps.o \
+	gt/intel_sa_media.o \
 	gt/intel_sseu.o \
 	gt/intel_sseu_debugfs.o \
 	gt/intel_timeline.o \
@@ -232,9 +252,11 @@ i915-y += \
 	display/intel_combo_phy.o \
 	display/intel_connector.o \
 	display/intel_crtc.o \
+	display/intel_crtc_state_dump.o \
 	display/intel_cursor.o \
 	display/intel_display.o \
 	display/intel_display_power.o \
+	display/intel_display_power_map.o \
 	display/intel_display_power_well.o \
 	display/intel_dmc.o \
 	display/intel_dpio_phy.o \
@@ -264,7 +286,8 @@ i915-y += \
 	display/intel_vga.o \
 	display/i9xx_plane.o \
 	display/skl_scaler.o \
-	display/skl_universal_plane.o
+	display/skl_universal_plane.o \
+	display/skl_watermark.o
 i915-$(CONFIG_ACPI) += \
 	display/intel_acpi.o \
 	display/intel_opregion.o
@@ -301,6 +324,8 @@ i915-y += \
 	display/intel_hdmi.o \
 	display/intel_lspcon.o \
 	display/intel_lvds.o \
+	display/intel_modeset_setup.o \
+	display/intel_modeset_verify.o \
 	display/intel_panel.o \
 	display/intel_pps.o \
 	display/intel_qp_tables.o \
@@ -315,14 +340,23 @@ i915-y += \
 i915-y += i915_perf.o
 
 # Protected execution platform (PXP) support
-i915-$(CONFIG_DRM_I915_PXP) += \
-	pxp/intel_pxp.o \
-	pxp/intel_pxp_cmd.o \
-	pxp/intel_pxp_debugfs.o \
-	pxp/intel_pxp_irq.o \
-	pxp/intel_pxp_pm.o \
-	pxp/intel_pxp_session.o \
+ifeq ($(call kver_ge,6,2,0),1)
+i915-y += \
+        pxp/intel_pxp.o \
+        pxp/intel_pxp_tee.o \
+        pxp/intel_pxp_huc.o
+else
+i915-y += \
+        pxp/intel_pxp.o \
 	pxp/intel_pxp_tee.o
+endif
+
+i915-$(CONFIG_DRM_I915_PXP) += \
+        pxp/intel_pxp_cmd.o \
+        pxp/intel_pxp_debugfs.o \
+        pxp/intel_pxp_irq.o \
+        pxp/intel_pxp_pm.o \
+        pxp/intel_pxp_session.o
 
 # Post-mortem debug and GPU hang state capture
 i915-$(CONFIG_DRM_I915_CAPTURE_ERROR) += i915_gpu_error.o
@@ -343,6 +377,10 @@ i915-$(CONFIG_DRM_I915_SELFTEST) += \
 # virtual gpu code
 i915-y += i915_vgpu.o
 
+i915-$(CONFIG_DRM_I915_GVT) += \
+       intel_gvt.o \
+       intel_gvt_mmio_table.o
+
 obj-$(CONFIG_DRM_I915)           += i915.o
 
 CFLAGS_i915_trace_points.o := -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915
@@ -360,8 +398,8 @@ i915-y := $(addprefix $(DRMD)i915/,$(i915-y))
 
 LINUXINCLUDE := \
     -I$(INC_INCPATH)/trace \
-	-I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915 \
-    -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915/gvt \
+    -I$(INC_INCPATH)/ \
+    -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915 \
     $(LINUXINCLUDE)
 
 obj-m := i915.o

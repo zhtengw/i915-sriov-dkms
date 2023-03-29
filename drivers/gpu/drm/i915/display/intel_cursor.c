@@ -6,6 +6,7 @@
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_uapi.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_fourcc.h>
@@ -19,9 +20,9 @@
 #include "intel_fb.h"
 #include "intel_fb_pin.h"
 #include "intel_frontbuffer.h"
-#include "intel_pm.h"
 #include "intel_psr.h"
 #include "intel_sprite.h"
+#include "skl_watermark.h"
 
 /* Cursor formats */
 static const u32 intel_cursor_formats[] = {

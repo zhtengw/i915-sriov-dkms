@@ -40,6 +40,7 @@
 
 #include <linux/string_helpers.h>
 
+#include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
 
 #include "i915_drv.h"
@@ -54,11 +55,11 @@
 
 #define for_each_fbc_id(__dev_priv, __fbc_id) \
 	for ((__fbc_id) = INTEL_FBC_A; (__fbc_id) < I915_MAX_FBCS; (__fbc_id)++) \
-		for_each_if(INTEL_INFO(__dev_priv)->display.fbc_mask & BIT(__fbc_id))
+		for_each_if(RUNTIME_INFO(__dev_priv)->fbc_mask & BIT(__fbc_id))
 
 #define for_each_intel_fbc(__dev_priv, __fbc, __fbc_id) \
 	for_each_fbc_id((__dev_priv), (__fbc_id)) \
-		for_each_if((__fbc) = (__dev_priv)->fbc[(__fbc_id)])
+		for_each_if((__fbc) = (__dev_priv)->display.fbc[(__fbc_id)])
 
 struct intel_fbc_funcs {
 	void (*activate)(struct intel_fbc *fbc);
@@ -811,6 +812,14 @@ static void intel_fbc_program_cfb(struct intel_fbc *fbc)
 	fbc->funcs->program_cfb(fbc);
 }
 
+static void intel_fbc_program_workarounds(struct intel_fbc *fbc)
+{
+	/* Wa_22014263786:icl,jsl,tgl,dg1,rkl,adls,adlp */
+	if (DISPLAY_VER(fbc->i915) >= 11 && !IS_DG2(fbc->i915))
+		intel_de_rmw(fbc->i915, ILK_DPFC_CHICKEN(fbc->id), 0,
+			     DPFC_CHICKEN_FORCE_SLB_INVALIDATION);
+}
+
 static void __intel_fbc_cleanup_cfb(struct intel_fbc *fbc)
 {
 	struct drm_i915_private *i915 = fbc->i915;
@@ -1086,7 +1095,13 @@ static int intel_fbc_check_plane(struct intel_atomic_state *state,
 	 */
 	if (DISPLAY_VER(i915) >= 12 && crtc_state->has_psr2) {
 		plane_state->no_fbc_reason = "PSR2 enabled";
-		return false;
+		return 0;
+	}
+
+	/* Wa_14016291713 */
+	if (IS_DISPLAY_VER(i915, 12, 13) && crtc_state->has_psr) {
+		plane_state->no_fbc_reason = "PSR1 enabled (Wa_14016291713)";
+		return 0;
 	}
 
 	if (!pixel_format_is_valid(plane_state)) {
@@ -1112,7 +1127,7 @@ static int intel_fbc_check_plane(struct intel_atomic_state *state,
 	if (plane_state->hw.pixel_blend_mode != DRM_MODE_BLEND_PIXEL_NONE &&
 	    fb->format->has_alpha) {
 		plane_state->no_fbc_reason = "per-pixel alpha not supported";
-		return false;
+		return 0;
 	}
 
 	if (!intel_fbc_hw_tracking_covers_screen(plane_state)) {
@@ -1128,7 +1143,7 @@ static int intel_fbc_check_plane(struct intel_atomic_state *state,
 	if (DISPLAY_VER(i915) >= 9 &&
 	    plane_state->view.color_plane[0].y & 3) {
 		plane_state->no_fbc_reason = "plane start Y offset misaligned";
-		return false;
+		return 0;
 	}
 
 	/* Wa_22010751166: icl, ehl, tgl, dg1, rkl */
@@ -1136,7 +1151,7 @@ static int intel_fbc_check_plane(struct intel_atomic_state *state,
 	    (plane_state->view.color_plane[0].y +
 	     (drm_rect_height(&plane_state->uapi.src) >> 16)) & 3) {
 		plane_state->no_fbc_reason = "plane end Y offset misaligned";
-		return false;
+		return 0;
 	}
 
 	/* WaFbcExceedCdClockThreshold:hsw,bdw */
@@ -1462,6 +1477,7 @@ static void __intel_fbc_enable(struct intel_atomic_state *state,
 
 	intel_fbc_update_state(state, crtc, plane);
 
+	intel_fbc_program_workarounds(fbc);
 	intel_fbc_program_cfb(fbc);
 }
 
@@ -1694,17 +1710,17 @@ void intel_fbc_init(struct drm_i915_private *i915)
 	enum intel_fbc_id fbc_id;
 
 	if (!drm_mm_initialized(&i915->mm.stolen))
-		mkwrite_device_info(i915)->display.fbc_mask = 0;
+		RUNTIME_INFO(i915)->fbc_mask = 0;
 
 	if (need_fbc_vtd_wa(i915))
-		mkwrite_device_info(i915)->display.fbc_mask = 0;
+		RUNTIME_INFO(i915)->fbc_mask = 0;
 
 	i915->params.enable_fbc = intel_sanitize_fbc_option(i915);
 	drm_dbg_kms(&i915->drm, "Sanitized enable_fbc value: %d\n",
 		    i915->params.enable_fbc);
 
 	for_each_fbc_id(i915, fbc_id)
-		i915->fbc[fbc_id] = intel_fbc_create(i915, fbc_id);
+		i915->display.fbc[fbc_id] = intel_fbc_create(i915, fbc_id);
 }
 
 /**
@@ -1824,7 +1840,7 @@ void intel_fbc_debugfs_register(struct drm_i915_private *i915)
 	struct drm_minor *minor = i915->drm.primary;
 	struct intel_fbc *fbc;
 
-	fbc = i915->fbc[INTEL_FBC_A];
+	fbc = i915->display.fbc[INTEL_FBC_A];
 	if (fbc)
 		intel_fbc_debugfs_add(fbc, minor->debugfs_root);
 }
