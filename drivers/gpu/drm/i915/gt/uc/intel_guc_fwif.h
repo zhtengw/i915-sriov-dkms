@@ -121,13 +121,7 @@ static inline const char *hxg_type_to_string(u32 type)
 #define   GUC_LOG_BUF_ADDR_SHIFT	12
 
 #define GUC_CTL_WA			1
-#define   GUC_WA_GAM_CREDITS		BIT(10)
-#define   GUC_WA_DUAL_QUEUE		BIT(11)
-#define   GUC_WA_RCS_RESET_BEFORE_RC6	BIT(13)
-#define   GUC_WA_CONTEXT_ISOLATION	BIT(15)
-#define   GUC_WA_PRE_PARSER		BIT(14)
-#define   GUC_WA_HOLD_CCS_SWITCHOUT	BIT(17)
-#define   GUC_WA_POLLCS			BIT(18)
+#define   GUC_WA_POLLCS                 BIT(18)
 
 #define GUC_CTL_FEATURE			2
 #define   GUC_CTL_ENABLE_SLPC		BIT(2)
@@ -185,37 +179,26 @@ FIELD_PREP(HOST2GUC_PC_SLPC_REQUEST_MSG_1_EVENT_ID, id) | \
 FIELD_PREP(HOST2GUC_PC_SLPC_REQUEST_MSG_1_EVENT_ARGC, c) \
 )
 
-/* the GuC arrays don't include OTHER_CLASS */
-static u8 engine_class_guc_class_map[] = {
-	[RENDER_CLASS]            = GUC_RENDER_CLASS,
-	[COPY_ENGINE_CLASS]       = GUC_BLITTER_CLASS,
-	[VIDEO_DECODE_CLASS]      = GUC_VIDEO_CLASS,
-	[VIDEO_ENHANCEMENT_CLASS] = GUC_VIDEOENHANCE_CLASS,
-	[COMPUTE_CLASS]           = GUC_COMPUTE_CLASS,
-};
-
-static u8 guc_class_engine_class_map[] = {
-	[GUC_RENDER_CLASS]       = RENDER_CLASS,
-	[GUC_BLITTER_CLASS]      = COPY_ENGINE_CLASS,
-	[GUC_VIDEO_CLASS]        = VIDEO_DECODE_CLASS,
-	[GUC_VIDEOENHANCE_CLASS] = VIDEO_ENHANCEMENT_CLASS,
-	[GUC_COMPUTE_CLASS]      = COMPUTE_CLASS,
-};
-
 static inline u8 engine_class_to_guc_class(u8 class)
 {
-	BUILD_BUG_ON(ARRAY_SIZE(engine_class_guc_class_map) != MAX_ENGINE_CLASS + 1);
+	BUILD_BUG_ON(GUC_RENDER_CLASS != RENDER_CLASS);
+	BUILD_BUG_ON(GUC_BLITTER_CLASS != COPY_ENGINE_CLASS);
+	BUILD_BUG_ON(GUC_VIDEO_CLASS != VIDEO_DECODE_CLASS);
+	BUILD_BUG_ON(GUC_VIDEOENHANCE_CLASS != VIDEO_ENHANCEMENT_CLASS);
+	BUILD_BUG_ON(GUC_COMPUTE_CLASS != (COMPUTE_CLASS - 1));
 	GEM_BUG_ON(class > MAX_ENGINE_CLASS || class == OTHER_CLASS);
 
-	return engine_class_guc_class_map[class];
+	/* the GuC arrays don't include OTHER_CLASS */
+	return class < OTHER_CLASS ? class : class - 1;
 }
 
 static inline u8 guc_class_to_engine_class(u8 guc_class)
 {
-	BUILD_BUG_ON(ARRAY_SIZE(guc_class_engine_class_map) != GUC_LAST_ENGINE_CLASS + 1);
+	BUILD_BUG_ON(GUC_COMPUTE_CLASS != OTHER_CLASS);
+	BUILD_BUG_ON(GUC_LAST_ENGINE_CLASS != (MAX_ENGINE_CLASS - 1));
 	GEM_BUG_ON(guc_class > GUC_LAST_ENGINE_CLASS);
 
-	return guc_class_engine_class_map[guc_class];
+	return guc_class < GUC_COMPUTE_CLASS ? guc_class : guc_class + 1;
 }
 
 /* Work item for submitting workloads into work queue of GuC. */
@@ -305,13 +288,10 @@ struct guc_mmio_reg {
 	u32 offset;
 	u32 value;
 	u32 flags;
+	u32 mask;
 #define GUC_REGSET_MASKED		BIT(0)
-#define GUC_REGSET_NEEDS_STEERING	BIT(1)
 #define GUC_REGSET_MASKED_WITH_VALUE	BIT(2)
 #define GUC_REGSET_RESTORE_ONLY		BIT(3)
-#define GUC_REGSET_STEERING_GROUP       GENMASK(15, 12)
-#define GUC_REGSET_STEERING_INSTANCE    GENMASK(23, 20)
-	u32 mask;
 } __packed;
 
 /* GuC register sets */
@@ -332,14 +312,6 @@ enum {
 	GUC_CAPTURE_LIST_INDEX_PF = 0,
 	GUC_CAPTURE_LIST_INDEX_VF = 1,
 	GUC_CAPTURE_LIST_INDEX_MAX = 2,
-};
-
-/*Register-types of GuC capture register lists */
-enum guc_capture_type {
-	GUC_CAPTURE_LIST_TYPE_GLOBAL = 0,
-	GUC_CAPTURE_LIST_TYPE_ENGINE_CLASS,
-	GUC_CAPTURE_LIST_TYPE_ENGINE_INSTANCE,
-	GUC_CAPTURE_LIST_TYPE_MAX,
 };
 
 /* GuC Additional Data Struct */

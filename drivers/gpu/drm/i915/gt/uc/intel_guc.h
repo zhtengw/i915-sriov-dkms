@@ -6,24 +6,24 @@
 #ifndef _INTEL_GUC_H_
 #define _INTEL_GUC_H_
 
-#include <linux/delay.h>
-#include <linux/iosys-map.h>
 #include <linux/xarray.h>
+#include <linux/delay.h>
 
-#include "intel_guc_ct.h"
+#include "intel_uncore.h"
 #include "intel_guc_fw.h"
 #include "intel_guc_fwif.h"
+#include "intel_guc_ct.h"
 #include "intel_guc_log.h"
 #include "intel_guc_reg.h"
 #include "intel_guc_slpc_types.h"
+#include "intel_guc_hwconfig.h"
 #include "intel_uc_fw.h"
-#include "intel_uncore.h"
 #include "i915_utils.h"
 #include "i915_vma.h"
 
 struct __guc_ads_blob;
+
 struct intel_guc;
-struct intel_guc_state_capture;
 
 struct intel_guc_ops {
 	int (*init)(struct intel_guc *guc);
@@ -47,8 +47,8 @@ struct intel_guc {
 	struct intel_guc_ct ct;
 	/** @slpc: sub-structure containing SLPC related data and objects */
 	struct intel_guc_slpc slpc;
-	/** @capture: the error-state-capture module's data and objects */
-	struct intel_guc_state_capture *capture;
+
+	struct intel_guc_hwconfig hwconfig;
 
 	/** @sched_engine: Global engine used to submit requests to GuC */
 	struct i915_sched_engine *sched_engine;
@@ -136,15 +136,6 @@ struct intel_guc {
 		 * function as it might be in an atomic context (no sleeping)
 		 */
 		struct work_struct destroyed_worker;
-		/**
-		 * @reset_fail_worker: worker to trigger a GT reset after an
-		 * engine reset fails
-		 */
-		struct work_struct reset_fail_worker;
-		/**
-		 * @reset_fail_mask: mask of engines that failed to reset
-		 */
-		intel_engine_mask_t reset_fail_mask;
 	} submission_state;
 
 	/**
@@ -165,21 +156,12 @@ struct intel_guc {
 
 	/** @ads_vma: object allocated to hold the GuC ADS */
 	struct i915_vma *ads_vma;
-	/** @ads_map: contents of the GuC ADS */
-	struct iosys_map ads_map;
+	/** @ads_blob: contents of the GuC ADS */
+	struct __guc_ads_blob *ads_blob;
 	/** @ads_regset_size: size of the save/restore regsets in the ADS */
 	u32 ads_regset_size;
-	/**
-	 * @ads_regset_count: number of save/restore registers in the ADS for
-	 * each engine
-	 */
-	u32 ads_regset_count[I915_NUM_ENGINES];
-	/** @ads_regset: save/restore regsets in the ADS */
-	struct guc_mmio_reg *ads_regset;
 	/** @ads_golden_ctxt_size: size of the golden contexts in the ADS */
 	u32 ads_golden_ctxt_size;
-	/** @ads_capture_size: size of register lists in the ADS used for error capture */
-	u32 ads_capture_size;
 	/** @ads_engine_usage_size: size of engine usage in the ADS */
 	u32 ads_engine_usage_size;
 
@@ -238,11 +220,6 @@ struct intel_guc {
 		 * context usage for overflows.
 		 */
 		struct delayed_work work;
-
-		/**
-		 * @shift: Right shift value for the gpm timestamp
-		 */
-		u32 shift;
 	} timestamp;
 
 #ifdef CONFIG_DRM_I915_SELFTEST
@@ -468,9 +445,6 @@ int intel_guc_engine_failure_process_msg(struct intel_guc *guc,
 int intel_guc_error_capture_process_msg(struct intel_guc *guc,
 					const u32 *msg, u32 len);
 void intel_guc_tlb_invalidation_done(struct intel_guc *guc, u32 seqno);
-
-struct intel_engine_cs *
-intel_guc_lookup_engine(struct intel_guc *guc, u8 guc_class, u8 instance);
 
 void intel_guc_find_hung_context(struct intel_engine_cs *engine);
 

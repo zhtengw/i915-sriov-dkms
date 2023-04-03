@@ -6,7 +6,6 @@
 #include <linux/circ_buf.h>
 #include <linux/ktime.h>
 #include <linux/time64.h>
-#include <linux/string_helpers.h>
 #include <linux/timekeeping.h>
 
 #include "i915_drv.h"
@@ -176,7 +175,7 @@ static int ct_control_enable(struct intel_guc_ct *ct, bool enable)
 				     GUC_CTB_CONTROL_ENABLE : GUC_CTB_CONTROL_DISABLE);
 	if (unlikely(err))
 		CT_PROBE_ERROR(ct, "Failed to control/%s CTB (%pe)\n",
-			       str_enable_disable(enable), ERR_PTR(err));
+			       enabledisable(enable), ERR_PTR(err));
 
 	return err;
 }
@@ -204,6 +203,7 @@ static int ct_register_buffer(struct intel_guc_ct *ct, bool send,
 				   GUC_KLV_SELF_CFG_H2G_CTB_SIZE_KEY :
 				   GUC_KLV_SELF_CFG_G2H_CTB_SIZE_KEY,
 				   size);
+
 	if (unlikely(err))
 failed:
 		CT_PROBE_ERROR(ct, "Failed to register %s buffer (%pe)\n",
@@ -321,6 +321,7 @@ int intel_guc_ct_enable(struct intel_guc_ct *ct)
 	 */
 	desc = base + ptrdiff(ct->ctbs.recv.desc, blob);
 	cmds = base + ptrdiff(ct->ctbs.recv.cmds, blob);
+
 	size = ct->ctbs.recv.size * 4;
 	err = ct_register_buffer(ct, false, desc, cmds, size);
 	if (unlikely(err))
@@ -805,7 +806,7 @@ static struct ct_incoming_msg *ct_alloc_msg(u32 num_dwords)
 {
 	struct ct_incoming_msg *msg;
 
-	msg = kmalloc(struct_size(msg, msg, num_dwords), GFP_ATOMIC);
+	msg = kmalloc(sizeof(*msg) + sizeof(u32) * num_dwords, GFP_ATOMIC);
 	if (msg)
 		msg->size = num_dwords;
 	return msg;
@@ -1286,7 +1287,7 @@ void intel_guc_ct_event_handler(struct intel_guc_ct *ct)
 void intel_guc_ct_print_info(struct intel_guc_ct *ct,
 			     struct drm_printer *p)
 {
-	drm_printf(p, "CT %s\n", str_enabled_disabled(ct->enabled));
+	drm_printf(p, "CT %s\n", enableddisabled(ct->enabled));
 
 	if (!ct->enabled)
 		return;

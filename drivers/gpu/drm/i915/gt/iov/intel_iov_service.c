@@ -13,8 +13,6 @@
 #include "abi/iov_messages_abi.h"
 #include "abi/iov_version_abi.h"
 
-#include "gt/intel_gt_regs.h"
-
 #include "intel_iov_relay.h"
 #include "intel_iov_service.h"
 #include "intel_iov_types.h"

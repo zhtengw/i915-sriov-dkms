@@ -3,15 +3,12 @@
  * Copyright © 2020 Intel Corporation
  */
 
-#include <drm/drm_fourcc.h>
-
 #include "gem/i915_gem_ioctls.h"
 #include "gem/i915_gem_lmem.h"
 #include "gem/i915_gem_region.h"
 #include "pxp/intel_pxp.h"
 
 #include "i915_drv.h"
-#include "i915_gem_create.h"
 #include "i915_trace.h"
 #include "i915_user_extensions.h"
 
@@ -123,7 +120,7 @@ __i915_gem_object_create_user_ext(struct drm_i915_private *i915, u64 size,
 	 */
 	flags = I915_BO_ALLOC_USER;
 
-	ret = mr->ops->init_object(mr, obj, I915_BO_INVALID_OFFSET, size, 0, flags);
+	ret = mr->ops->init_object(mr, obj, size, 0, flags);
 	if (ret)
 		goto object_free;
 
@@ -382,7 +379,7 @@ static int ext_set_protected(struct i915_user_extension __user *base, void *data
 	if (ext.flags)
 		return -EINVAL;
 
-	if (!intel_pxp_is_enabled(&to_gt(ext_data->i915)->pxp))
+	if (!intel_pxp_is_enabled(&ext_data->i915->gt.pxp))
 		return -ENODEV;
 
 	ext_data->flags |= I915_BO_PROTECTED;

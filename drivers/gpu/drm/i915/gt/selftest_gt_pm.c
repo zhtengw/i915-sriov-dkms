@@ -5,7 +5,6 @@
 
 #include <linux/sort.h>
 
-#include "intel_engine_regs.h"
 #include "intel_gt_clock_utils.h"
 
 #include "selftest_llc.h"
@@ -44,7 +43,7 @@ static void measure_clocks(struct intel_engine_cs *engine,
 	int i;
 
 	for (i = 0; i < 5; i++) {
-		local_irq_disable();
+		preempt_disable();
 		cycles[i] = -ENGINE_READ_FW(engine, RING_TIMESTAMP);
 		dt[i] = ktime_get();
 
@@ -52,7 +51,7 @@ static void measure_clocks(struct intel_engine_cs *engine,
 
 		dt[i] = ktime_sub(ktime_get(), dt[i]);
 		cycles[i] += ENGINE_READ_FW(engine, RING_TIMESTAMP);
-		local_irq_enable();
+		preempt_enable();
 	}
 
 	/* Use the median of both cycle/dt; close enough */
@@ -195,10 +194,10 @@ int intel_gt_pm_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_gt_resume),
 	};
 
-	if (intel_gt_is_wedged(to_gt(i915)))
+	if (intel_gt_is_wedged(&i915->gt))
 		return 0;
 
-	return intel_gt_live_subtests(tests, to_gt(i915));
+	return intel_gt_live_subtests(tests, &i915->gt);
 }
 
 int intel_gt_pm_late_selftests(struct drm_i915_private *i915)
@@ -212,8 +211,8 @@ int intel_gt_pm_late_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_rc6_ctx_wa),
 	};
 
-	if (intel_gt_is_wedged(to_gt(i915)))
+	if (intel_gt_is_wedged(&i915->gt))
 		return 0;
 
-	return intel_gt_live_subtests(tests, to_gt(i915));
+	return intel_gt_live_subtests(tests, &i915->gt);
 }

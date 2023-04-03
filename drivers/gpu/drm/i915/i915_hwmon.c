@@ -13,7 +13,6 @@
 
 #include "i915_drv.h"
 #include "i915_hwmon.h"
-#include "intel_mchbar_regs.h"
 
 /*
  * SF_* - scale factors for particular quantities according to hwmon spec.

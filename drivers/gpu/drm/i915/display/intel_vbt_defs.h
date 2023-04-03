@@ -234,6 +234,32 @@ struct bdb_general_features {
 #define DEVICE_TYPE_DIGITAL_OUTPUT	(1 << 1)
 #define DEVICE_TYPE_ANALOG_OUTPUT	(1 << 0)
 
+/*
+ * Bits we care about when checking for DEVICE_TYPE_eDP. Depending on the
+ * system, the other bits may or may not be set for eDP outputs.
+ */
+#define DEVICE_TYPE_eDP_BITS \
+	(DEVICE_TYPE_INTERNAL_CONNECTOR |	\
+	 DEVICE_TYPE_MIPI_OUTPUT |		\
+	 DEVICE_TYPE_COMPOSITE_OUTPUT |		\
+	 DEVICE_TYPE_DUAL_CHANNEL |		\
+	 DEVICE_TYPE_LVDS_SIGNALING |		\
+	 DEVICE_TYPE_TMDS_DVI_SIGNALING |	\
+	 DEVICE_TYPE_VIDEO_SIGNALING |		\
+	 DEVICE_TYPE_DISPLAYPORT_OUTPUT |	\
+	 DEVICE_TYPE_ANALOG_OUTPUT)
+
+#define DEVICE_TYPE_DP_DUAL_MODE_BITS \
+	(DEVICE_TYPE_INTERNAL_CONNECTOR |	\
+	 DEVICE_TYPE_MIPI_OUTPUT |		\
+	 DEVICE_TYPE_COMPOSITE_OUTPUT |		\
+	 DEVICE_TYPE_LVDS_SIGNALING |		\
+	 DEVICE_TYPE_TMDS_DVI_SIGNALING |	\
+	 DEVICE_TYPE_VIDEO_SIGNALING |		\
+	 DEVICE_TYPE_DISPLAYPORT_OUTPUT |	\
+	 DEVICE_TYPE_DIGITAL_OUTPUT |		\
+	 DEVICE_TYPE_ANALOG_OUTPUT)
+
 #define DEVICE_CFG_NONE		0x00
 #define DEVICE_CFG_12BIT_DVOB	0x01
 #define DEVICE_CFG_12BIT_DVOC	0x02
@@ -289,9 +315,6 @@ struct bdb_general_features {
 #define HDMI_MAX_DATA_RATE_PLATFORM	0			/* 204 */
 #define HDMI_MAX_DATA_RATE_297		1			/* 204 */
 #define HDMI_MAX_DATA_RATE_165		2			/* 204 */
-#define HDMI_MAX_DATA_RATE_594		3			/* 249 */
-#define HDMI_MAX_DATA_RATE_340		4			/* 249 */
-#define HDMI_MAX_DATA_RATE_300		5			/* 249 */
 
 #define LEGACY_CHILD_DEVICE_CONFIG_SIZE		33
 
@@ -722,22 +745,20 @@ struct bdb_lvds_options {
 /*
  * Block 41 - LFP Data Table Pointers
  */
-struct lvds_lfp_data_ptr_table {
-	u16 offset; /* offsets are from start of bdb */
-	u8 table_size;
-} __packed;
 
 /* LFP pointer table contains entries to the struct below */
 struct lvds_lfp_data_ptr {
-	struct lvds_lfp_data_ptr_table fp_timing;
-	struct lvds_lfp_data_ptr_table dvo_timing;
-	struct lvds_lfp_data_ptr_table panel_pnp_id;
+	u16 fp_timing_offset; /* offsets are from start of bdb */
+	u8 fp_table_size;
+	u16 dvo_timing_offset;
+	u8 dvo_table_size;
+	u16 panel_pnp_id_offset;
+	u8 pnp_table_size;
 } __packed;
 
 struct bdb_lvds_lfp_data_ptrs {
 	u8 lvds_entries; /* followed by one or more lvds_data_ptr structs */
 	struct lvds_lfp_data_ptr ptr[16];
-	struct lvds_lfp_data_ptr_table panel_name; /* 156-163? */
 } __packed;
 
 /*
@@ -777,10 +798,6 @@ struct lvds_lfp_data_entry {
 
 struct bdb_lvds_lfp_data {
 	struct lvds_lfp_data_entry data[16];
-} __packed;
-
-struct lvds_lfp_panel_name {
-	u8 name[13];
 } __packed;
 
 /*

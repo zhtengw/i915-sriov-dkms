@@ -18,7 +18,6 @@
 #include "i915_drv.h"
 #include "i915_request.h"
 #include "i915_sysrq.h"
-#include "i915_irq.h"
 #include "intel_wakeref.h"
 
 static DEFINE_MUTEX(sysrq_mutex);

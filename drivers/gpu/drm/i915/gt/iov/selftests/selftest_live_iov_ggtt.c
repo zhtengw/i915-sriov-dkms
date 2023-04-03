@@ -269,7 +269,7 @@ static int igt_pf_iov_ggtt(struct intel_iov *iov)
 	GEM_BUG_ON(!intel_iov_is_pf(iov));
 
 	mutex_lock(&ggtt->vm.mutex);
-	err = i915_gem_gtt_insert(&ggtt->vm, NULL, &ggtt_block, size_ggtt_block, 0,
+	err = i915_gem_gtt_insert(&ggtt->vm, &ggtt_block, size_ggtt_block, 0,
 				  I915_COLOR_UNEVICTABLE, 0, U64_MAX, PIN_HIGH);
 	mutex_unlock(&ggtt->vm.mutex);
 
@@ -372,7 +372,7 @@ static int igt_vf_iov_own_ggtt_via_pf(struct intel_iov *iov)
 	GEM_BUG_ON(!intel_iov_is_vf(iov));
 
 	mutex_lock(&ggtt->vm.mutex);
-	err = i915_gem_gtt_insert(&ggtt->vm, NULL, &ggtt_block, size_ggtt_block,
+	err = i915_gem_gtt_insert(&ggtt->vm, &ggtt_block, size_ggtt_block,
 				  0, I915_COLOR_UNEVICTABLE, 0, U64_MAX,
 				  PIN_HIGH);
 	mutex_unlock(&ggtt->vm.mutex);

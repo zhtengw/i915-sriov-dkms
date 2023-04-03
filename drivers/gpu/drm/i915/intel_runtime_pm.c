@@ -52,17 +52,25 @@
 
 #if IS_ENABLED(CONFIG_DRM_I915_DEBUG_RUNTIME_PM)
 
+static void __print_depot_stack(depot_stack_handle_t stack,
+				char *buf, int sz, int indent)
+{
+	unsigned long *entries;
+	unsigned int nr_entries;
+
+	nr_entries = stack_depot_fetch(stack, &entries);
+	stack_trace_snprint(buf, sz, entries, nr_entries, indent);
+}
+
 static void init_intel_runtime_pm_wakeref(struct intel_runtime_pm *rpm)
 {
 	intel_wakeref_tracker_init(&rpm->debug);
-	stack_depot_init();
 }
 
 static intel_wakeref_t
 track_intel_runtime_pm_wakeref(struct intel_runtime_pm *rpm)
 {
-
-	if (rpm->no_wakeref_tracking)
+	if (!rpm->available)
 		return -1;
 
 	return intel_wakeref_tracker_add(&rpm->debug);
@@ -406,9 +414,6 @@ void intel_runtime_pm_enable(struct intel_runtime_pm *rpm)
 	} else {
 		pm_runtime_use_autosuspend(kdev);
 	}
-
-	/* Enable by default */
-	pm_runtime_allow(kdev);
 
 	/*
 	 * The core calls the driver load handler with an RPM reference held.

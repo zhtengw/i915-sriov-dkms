@@ -157,7 +157,7 @@ static int intel_guc_steal_guc_ids(void *arg)
 	wakeref = intel_runtime_pm_get(gt->uncore->rpm);
 	engine = intel_selftest_find_any_engine(gt);
 	sv = guc->submission_state.num_guc_ids;
-	guc->submission_state.num_guc_ids = 512;
+	guc->submission_state.num_guc_ids = 4096;
 
 	/* Create spinner to block requests in below loop */
 	ce[context_index] = intel_context_create(engine);
@@ -288,7 +288,7 @@ int intel_guc_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(intel_guc_scrub_ctbs),
 		SUBTEST(intel_guc_steal_guc_ids),
 	};
-	struct intel_gt *gt = to_gt(i915);
+	struct intel_gt *gt = &i915->gt;
 
 	if (intel_gt_is_wedged(gt))
 		return 0;

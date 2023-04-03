@@ -27,7 +27,7 @@
 
 #include <drm/drm_crtc.h>
 
-#include "i915_reg_defs.h"
+#include "i915_reg.h"
 
 struct intel_dvo_device {
 	const char *name;

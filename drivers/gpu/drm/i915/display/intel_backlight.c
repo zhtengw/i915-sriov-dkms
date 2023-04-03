@@ -5,7 +5,6 @@
 
 #include <linux/kernel.h>
 #include <linux/pwm.h>
-#include <linux/string_helpers.h>
 
 #include "intel_backlight.h"
 #include "intel_connector.h"
@@ -14,7 +13,6 @@
 #include "intel_dp_aux_backlight.h"
 #include "intel_dsi_dcs_backlight.h"
 #include "intel_panel.h"
-#include "intel_pci_config.h"
 
 /**
  * scale - scale values from one range to another
@@ -434,8 +432,6 @@ static void ext_pwm_disable_backlight(const struct drm_connector_state *old_conn
 {
 	struct intel_connector *connector = to_intel_connector(old_conn_state->connector);
 	struct intel_panel *panel = &connector->panel;
-
-	intel_backlight_set_pwm_level(old_conn_state, level);
 
 	panel->backlight.pwm_state.enabled = false;
 	pwm_apply_state(panel->backlight.pwm, &panel->backlight.pwm_state);
@@ -1634,7 +1630,7 @@ int intel_backlight_setup(struct intel_connector *connector, enum pipe pipe)
 	drm_dbg_kms(&dev_priv->drm,
 		    "Connector %s backlight initialized, %s, brightness %u/%u\n",
 		    connector->base.name,
-		    str_enabled_disabled(panel->backlight.enabled),
+		    enableddisabled(panel->backlight.enabled),
 		    panel->backlight.level, panel->backlight.max);
 
 	return 0;

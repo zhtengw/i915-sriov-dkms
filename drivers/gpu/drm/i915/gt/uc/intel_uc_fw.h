@@ -32,12 +32,11 @@ struct intel_gt;
  * |            |    MISSING <--/    |    \--> ERROR                |
  * |   fetch    |                    V                              |
  * |            |                 AVAILABLE                         |
- * +------------+-                   |   \                         -+
- * |            |                    |    \--> INIT FAIL            |
+ * +------------+-                   |                             -+
  * |   init     |                    V                              |
  * |            |        /------> LOADABLE <----<-----------\       |
  * +------------+-       \         /    \        \           \     -+
- * |            |    LOAD FAIL <--<      \--> TRANSFERRED     \     |
+ * |            |         FAIL <--<      \--> TRANSFERRED     \     |
  * |   upload   |                  \           /   \          /     |
  * |            |                   \---------/     \--> RUNNING    |
  * +------------+---------------------------------------------------+
@@ -51,9 +50,8 @@ enum intel_uc_fw_status {
 	INTEL_UC_FIRMWARE_MISSING, /* blob not found on the system */
 	INTEL_UC_FIRMWARE_ERROR, /* invalid format or version */
 	INTEL_UC_FIRMWARE_AVAILABLE, /* blob found and copied in mem */
-	INTEL_UC_FIRMWARE_INIT_FAIL, /* failed to prepare fw objects for load */
 	INTEL_UC_FIRMWARE_LOADABLE, /* all fw-required objects are ready */
-	INTEL_UC_FIRMWARE_LOAD_FAIL, /* failed to xfer or init/auth the fw */
+	INTEL_UC_FIRMWARE_FAIL, /* failed to xfer or init/auth the fw */
 	INTEL_UC_FIRMWARE_TRANSFERRED, /* dma xfer done */
 	INTEL_UC_FIRMWARE_RUNNING, /* init/auth done */
 	INTEL_UC_FIRMWARE_PRELOADED, /* already pre-loaded */
@@ -66,6 +64,18 @@ enum intel_uc_fw_type {
 #define INTEL_UC_FW_NUM_TYPES 2
 
 /*
+ * The firmware build process will generate a version header file with major and
+ * minor version defined. The versions are built into CSS header of firmware.
+ * i915 kernel driver set the minimal firmware version required per platform.
+ */
+struct intel_uc_fw_file {
+	const char *path;
+	u16 major_ver;
+	u16 minor_ver;
+	u16 patch_ver;
+};
+
+/*
  * This structure encapsulates all the data needed during the process
  * of fetching, caching, and loading the firmware image into the uC.
  */
@@ -75,10 +85,12 @@ struct intel_uc_fw {
 		const enum intel_uc_fw_status status;
 		enum intel_uc_fw_status __status; /* no accidental overwrites */
 	};
-	const char *path;
+	struct intel_uc_fw_file file_wanted;
+	struct intel_uc_fw_file file_selected;
 	bool user_overridden;
 	size_t size;
 	struct drm_i915_gem_object *obj;
+
 	/**
 	 * @dummy: A vma used in binding the uc fw to ggtt. We can't define this
 	 * vma on the stack as it can lead to a stack overflow, so we define it
@@ -86,26 +98,20 @@ struct intel_uc_fw {
 	 * threaded as it done during driver load (inherently single threaded)
 	 * or during a GT reset (mutex guarantees single threaded).
 	 */
-	struct i915_vma_resource dummy;
+	struct i915_vma dummy;
 	struct i915_vma *rsa_data;
-
-	/*
-	 * The firmware build process will generate a version header file with major and
-	 * minor version defined. The versions are built into CSS header of firmware.
-	 * i915 kernel driver set the minimal firmware version required per platform.
-	 */
-	u16 major_ver_wanted;
-	u16 minor_ver_wanted;
-	u16 major_vf_ver_wanted;
-	u16 minor_vf_ver_wanted;
-	u16 major_ver_found;
-	u16 minor_ver_found;
 
 	u32 rsa_size;
 	u32 ucode_size;
-
 	u32 private_data_size;
+
+	bool loaded_via_gsc;
 };
+
+#define MAKE_UC_VER(maj, min, pat)	((pat) | ((min) << 8) | ((maj) << 16))
+#define GET_UC_VER(uc)			(MAKE_UC_VER((uc)->fw.file_selected.major_ver, \
+						     (uc)->fw.file_selected.minor_ver, \
+						     (uc)->fw.file_selected.patch_ver))
 
 #ifdef CONFIG_DRM_I915_DEBUG_GUC
 void intel_uc_fw_change_status(struct intel_uc_fw *uc_fw,
@@ -136,12 +142,10 @@ const char *intel_uc_fw_status_repr(enum intel_uc_fw_status status)
 		return "ERROR";
 	case INTEL_UC_FIRMWARE_AVAILABLE:
 		return "AVAILABLE";
-	case INTEL_UC_FIRMWARE_INIT_FAIL:
-		return "INIT FAIL";
 	case INTEL_UC_FIRMWARE_LOADABLE:
 		return "LOADABLE";
-	case INTEL_UC_FIRMWARE_LOAD_FAIL:
-		return "LOAD FAIL";
+	case INTEL_UC_FIRMWARE_FAIL:
+		return "FAIL";
 	case INTEL_UC_FIRMWARE_TRANSFERRED:
 		return "TRANSFERRED";
 	case INTEL_UC_FIRMWARE_RUNNING:
@@ -165,8 +169,7 @@ static inline int intel_uc_fw_status_to_error(enum intel_uc_fw_status status)
 		return -ENOENT;
 	case INTEL_UC_FIRMWARE_ERROR:
 		return -ENOEXEC;
-	case INTEL_UC_FIRMWARE_INIT_FAIL:
-	case INTEL_UC_FIRMWARE_LOAD_FAIL:
+	case INTEL_UC_FIRMWARE_FAIL:
 		return -EIO;
 	case INTEL_UC_FIRMWARE_SELECTED:
 		return -ESTALE;

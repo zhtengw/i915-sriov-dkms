@@ -88,7 +88,7 @@ out:
 static int igt_dmabuf_import_same_driver_lmem(void *arg)
 {
 	struct drm_i915_private *i915 = arg;
-	struct intel_memory_region *lmem = i915->mm.regions[INTEL_REGION_LMEM_0];
+	struct intel_memory_region *lmem = i915->mm.regions[INTEL_REGION_LMEM];
 	struct drm_i915_gem_object *obj;
 	struct drm_gem_object *import;
 	struct dma_buf *dmabuf;
@@ -102,7 +102,7 @@ static int igt_dmabuf_import_same_driver_lmem(void *arg)
 	obj = __i915_gem_object_create_user(i915, PAGE_SIZE, &lmem, 1);
 	if (IS_ERR(obj)) {
 		pr_err("__i915_gem_object_create_user failed with err=%ld\n",
-		       PTR_ERR(obj));
+		       PTR_ERR(dmabuf));
 		err = PTR_ERR(obj);
 		goto out_ret;
 	}
@@ -158,7 +158,7 @@ static int igt_dmabuf_import_same_driver(struct drm_i915_private *i915,
 					    regions, num_regions);
 	if (IS_ERR(obj)) {
 		pr_err("__i915_gem_object_create_user failed with err=%ld\n",
-		       PTR_ERR(obj));
+		       PTR_ERR(dmabuf));
 		err = PTR_ERR(obj);
 		goto out_ret;
 	}
@@ -219,8 +219,7 @@ static int igt_dmabuf_import_same_driver(struct drm_i915_private *i915,
 		goto out_detach;
 	}
 
-	timeout = dma_resv_wait_timeout(dmabuf->resv, DMA_RESV_USAGE_WRITE,
-					true, 5 * HZ);
+	timeout = dma_resv_wait_timeout(dmabuf->resv, false, true, 5 * HZ);
 	if (!timeout) {
 		pr_err("dmabuf wait for exclusive fence timed out.\n");
 		timeout = -ETIME;
@@ -253,10 +252,10 @@ static int igt_dmabuf_import_same_driver_lmem_smem(void *arg)
 	struct drm_i915_private *i915 = arg;
 	struct intel_memory_region *regions[2];
 
-	if (!i915->mm.regions[INTEL_REGION_LMEM_0])
+	if (!i915->mm.regions[INTEL_REGION_LMEM])
 		return 0;
 
-	regions[0] = i915->mm.regions[INTEL_REGION_LMEM_0];
+	regions[0] = i915->mm.regions[INTEL_REGION_LMEM];
 	regions[1] = i915->mm.regions[INTEL_REGION_SMEM];
 	return igt_dmabuf_import_same_driver(i915, regions, 2);
 }
@@ -267,7 +266,7 @@ static int igt_dmabuf_import(void *arg)
 	struct drm_i915_gem_object *obj;
 	struct dma_buf *dmabuf;
 	void *obj_map, *dma_map;
-	struct iosys_map map;
+	struct dma_buf_map map;
 	u32 pattern[] = { 0, 0xaa, 0xcc, 0x55, 0xff };
 	int err, i;
 
@@ -350,7 +349,7 @@ static int igt_dmabuf_import_ownership(void *arg)
 	struct drm_i915_private *i915 = arg;
 	struct drm_i915_gem_object *obj;
 	struct dma_buf *dmabuf;
-	struct iosys_map map;
+	struct dma_buf_map map;
 	void *ptr;
 	int err;
 
@@ -401,7 +400,7 @@ static int igt_dmabuf_export_vmap(void *arg)
 	struct drm_i915_private *i915 = arg;
 	struct drm_i915_gem_object *obj;
 	struct dma_buf *dmabuf;
-	struct iosys_map map;
+	struct dma_buf_map map;
 	void *ptr;
 	int err;
 

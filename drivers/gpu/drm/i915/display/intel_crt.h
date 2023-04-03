@@ -6,7 +6,7 @@
 #ifndef __INTEL_CRT_H__
 #define __INTEL_CRT_H__
 
-#include "i915_reg_defs.h"
+#include "i915_reg.h"
 
 enum pipe;
 struct drm_encoder;

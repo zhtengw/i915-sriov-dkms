@@ -5,7 +5,6 @@
 
 #include "gen6_engine_cs.h"
 #include "intel_engine.h"
-#include "intel_engine_regs.h"
 #include "intel_gpu_commands.h"
 #include "intel_gt.h"
 #include "intel_gt_irq.h"

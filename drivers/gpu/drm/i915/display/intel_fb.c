@@ -6,7 +6,6 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_modeset_helper.h>
 
-#include "i915_drv.h"
 #include "intel_display.h"
 #include "intel_display_types.h"
 #include "intel_dpt.h"
@@ -107,21 +106,6 @@ static const struct drm_format_info gen12_ccs_cc_formats[] = {
 	  .hsub = 1, .vsub = 1, .has_alpha = true },
 };
 
-static const struct drm_format_info gen12_flat_ccs_cc_formats[] = {
-	{ .format = DRM_FORMAT_XRGB8888, .depth = 24, .num_planes = 2,
-	  .char_per_block = { 4, 0 }, .block_w = { 1, 2 }, .block_h = { 1, 1 },
-	  .hsub = 1, .vsub = 1, },
-	{ .format = DRM_FORMAT_XBGR8888, .depth = 24, .num_planes = 2,
-	  .char_per_block = { 4, 0 }, .block_w = { 1, 2 }, .block_h = { 1, 1 },
-	  .hsub = 1, .vsub = 1, },
-	{ .format = DRM_FORMAT_ARGB8888, .depth = 32, .num_planes = 2,
-	  .char_per_block = { 4, 0 }, .block_w = { 1, 2 }, .block_h = { 1, 1 },
-	  .hsub = 1, .vsub = 1, .has_alpha = true },
-	{ .format = DRM_FORMAT_ABGR8888, .depth = 32, .num_planes = 2,
-	  .char_per_block = { 4, 0 }, .block_w = { 1, 2 }, .block_h = { 1, 1 },
-	  .hsub = 1, .vsub = 1, .has_alpha = true },
-};
-
 struct intel_modifier_desc {
 	u64 modifier;
 	struct {
@@ -136,50 +120,29 @@ struct intel_modifier_desc {
 	.formats = format_list, \
 	.format_count = ARRAY_SIZE(format_list)
 
-	u8 plane_caps;
+	u8 tiling;
+	u8 is_linear:1;
 
 	struct {
+#define INTEL_CCS_RC		BIT(0)
+#define INTEL_CCS_RC_CC		BIT(1)
+#define INTEL_CCS_MC		BIT(2)
+
+#define INTEL_CCS_ANY		(INTEL_CCS_RC | INTEL_CCS_RC_CC | INTEL_CCS_MC)
+		u8 type:3;
 		u8 cc_planes:3;
 		u8 packed_aux_planes:4;
 		u8 planar_aux_planes:4;
 	} ccs;
 };
 
-#define INTEL_PLANE_CAP_CCS_MASK	(INTEL_PLANE_CAP_CCS_RC | \
-					 INTEL_PLANE_CAP_CCS_RC_CC | \
-					 INTEL_PLANE_CAP_CCS_MC)
-#define INTEL_PLANE_CAP_TILING_MASK	(INTEL_PLANE_CAP_TILING_X | \
-					 INTEL_PLANE_CAP_TILING_Y | \
-					 INTEL_PLANE_CAP_TILING_Yf | \
-					 INTEL_PLANE_CAP_TILING_4)
-#define INTEL_PLANE_CAP_TILING_NONE	0
-
 static const struct intel_modifier_desc intel_modifiers[] = {
 	{
-		.modifier = I915_FORMAT_MOD_4_TILED_DG2_MC_CCS,
-		.display_ver = { 13, 13 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_4 | INTEL_PLANE_CAP_CCS_MC,
-	}, {
-		.modifier = I915_FORMAT_MOD_4_TILED_DG2_RC_CCS_CC,
-		.display_ver = { 13, 13 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_4 | INTEL_PLANE_CAP_CCS_RC_CC,
-
-		.ccs.cc_planes = BIT(1),
-
-		FORMAT_OVERRIDE(gen12_flat_ccs_cc_formats),
-	}, {
-		.modifier = I915_FORMAT_MOD_4_TILED_DG2_RC_CCS,
-		.display_ver = { 13, 13 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_4 | INTEL_PLANE_CAP_CCS_RC,
-	}, {
-		.modifier = I915_FORMAT_MOD_4_TILED,
-		.display_ver = { 13, 13 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_4,
-	}, {
 		.modifier = I915_FORMAT_MOD_Y_TILED_GEN12_MC_CCS,
 		.display_ver = { 12, 13 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_Y | INTEL_PLANE_CAP_CCS_MC,
+		.tiling = I915_TILING_Y,
 
+		.ccs.type = INTEL_CCS_MC,
 		.ccs.packed_aux_planes = BIT(1),
 		.ccs.planar_aux_planes = BIT(2) | BIT(3),
 
@@ -187,16 +150,18 @@ static const struct intel_modifier_desc intel_modifiers[] = {
 	}, {
 		.modifier = I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS,
 		.display_ver = { 12, 13 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_Y | INTEL_PLANE_CAP_CCS_RC,
+		.tiling = I915_TILING_Y,
 
+		.ccs.type = INTEL_CCS_RC,
 		.ccs.packed_aux_planes = BIT(1),
 
 		FORMAT_OVERRIDE(gen12_ccs_formats),
 	}, {
 		.modifier = I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS_CC,
 		.display_ver = { 12, 13 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_Y | INTEL_PLANE_CAP_CCS_RC_CC,
+		.tiling = I915_TILING_Y,
 
+		.ccs.type = INTEL_CCS_RC_CC,
 		.ccs.cc_planes = BIT(2),
 		.ccs.packed_aux_planes = BIT(1),
 
@@ -204,34 +169,39 @@ static const struct intel_modifier_desc intel_modifiers[] = {
 	}, {
 		.modifier = I915_FORMAT_MOD_Yf_TILED_CCS,
 		.display_ver = { 9, 11 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_Yf | INTEL_PLANE_CAP_CCS_RC,
+		.tiling = I915_TILING_NONE,
 
+		.ccs.type = INTEL_CCS_RC,
 		.ccs.packed_aux_planes = BIT(1),
 
 		FORMAT_OVERRIDE(skl_ccs_formats),
 	}, {
 		.modifier = I915_FORMAT_MOD_Y_TILED_CCS,
 		.display_ver = { 9, 11 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_Y | INTEL_PLANE_CAP_CCS_RC,
+		.tiling = I915_TILING_Y,
 
+		.ccs.type = INTEL_CCS_RC,
 		.ccs.packed_aux_planes = BIT(1),
 
 		FORMAT_OVERRIDE(skl_ccs_formats),
 	}, {
 		.modifier = I915_FORMAT_MOD_Yf_TILED,
 		.display_ver = { 9, 11 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_Yf,
+		.tiling = I915_TILING_NONE,
 	}, {
 		.modifier = I915_FORMAT_MOD_Y_TILED,
 		.display_ver = { 9, 13 },
-		.plane_caps = INTEL_PLANE_CAP_TILING_Y,
+		.tiling = I915_TILING_Y,
 	}, {
 		.modifier = I915_FORMAT_MOD_X_TILED,
 		.display_ver = DISPLAY_VER_ALL,
-		.plane_caps = INTEL_PLANE_CAP_TILING_X,
+		.tiling = I915_TILING_X,
 	}, {
 		.modifier = DRM_FORMAT_MOD_LINEAR,
 		.display_ver = DISPLAY_VER_ALL,
+		.tiling = I915_TILING_NONE,
+
+		.is_linear = true,
 	},
 };
 
@@ -289,14 +259,9 @@ intel_fb_get_format_info(const struct drm_mode_fb_cmd2 *cmd)
 	return lookup_format_info(md->formats, md->format_count, cmd->pixel_format);
 }
 
-static bool plane_caps_contain_any(u8 caps, u8 mask)
+static bool is_ccs_type_modifier(const struct intel_modifier_desc *md, u8 ccs_type)
 {
-	return caps & mask;
-}
-
-static bool plane_caps_contain_all(u8 caps, u8 mask)
-{
-	return (caps & mask) == mask;
+	return md->ccs.type & ccs_type;
 }
 
 /**
@@ -309,8 +274,7 @@ static bool plane_caps_contain_all(u8 caps, u8 mask)
  */
 bool intel_fb_is_ccs_modifier(u64 modifier)
 {
-	return plane_caps_contain_any(lookup_modifier(modifier)->plane_caps,
-				      INTEL_PLANE_CAP_CCS_MASK);
+	return is_ccs_type_modifier(lookup_modifier(modifier), INTEL_CCS_ANY);
 }
 
 /**
@@ -322,8 +286,7 @@ bool intel_fb_is_ccs_modifier(u64 modifier)
  */
 bool intel_fb_is_rc_ccs_cc_modifier(u64 modifier)
 {
-	return plane_caps_contain_any(lookup_modifier(modifier)->plane_caps,
-				      INTEL_PLANE_CAP_CCS_RC_CC);
+	return is_ccs_type_modifier(lookup_modifier(modifier), INTEL_CCS_RC_CC);
 }
 
 /**
@@ -335,8 +298,7 @@ bool intel_fb_is_rc_ccs_cc_modifier(u64 modifier)
  */
 bool intel_fb_is_mc_ccs_modifier(u64 modifier)
 {
-	return plane_caps_contain_any(lookup_modifier(modifier)->plane_caps,
-				      INTEL_PLANE_CAP_CCS_MC);
+	return is_ccs_type_modifier(lookup_modifier(modifier), INTEL_CCS_MC);
 }
 
 static bool check_modifier_display_ver_range(const struct intel_modifier_desc *md,
@@ -347,13 +309,22 @@ static bool check_modifier_display_ver_range(const struct intel_modifier_desc *m
 }
 
 static bool plane_has_modifier(struct drm_i915_private *i915,
-			       u8 plane_caps,
+			       enum intel_plane_caps plane_caps,
 			       const struct intel_modifier_desc *md)
 {
 	if (!IS_DISPLAY_VER(i915, md->display_ver.from, md->display_ver.until))
 		return false;
 
-	if (!plane_caps_contain_all(plane_caps, md->plane_caps))
+	if (!md->is_linear &&
+	    !(plane_caps & PLANE_HAS_TILING))
+		return false;
+
+	if (is_ccs_type_modifier(md, INTEL_CCS_RC | INTEL_CCS_RC_CC) &&
+	    !(plane_caps & PLANE_HAS_CCS_RC))
+		return false;
+
+	if (is_ccs_type_modifier(md, INTEL_CCS_MC) &&
+	    !(plane_caps & PLANE_HAS_CCS_MC))
 		return false;
 
 	return true;
@@ -369,7 +340,7 @@ static bool plane_has_modifier(struct drm_i915_private *i915,
  * The caller must free the returned buffer.
  */
 u64 *intel_fb_plane_get_modifiers(struct drm_i915_private *i915,
-				  u8 plane_caps)
+				  enum intel_plane_caps plane_caps)
 {
 	u64 *list, *p;
 	int count = 1;		/* +1 for invalid modifier terminator */
@@ -416,13 +387,17 @@ bool intel_fb_plane_supports_modifier(struct intel_plane *plane, u64 modifier)
 static bool format_is_yuv_semiplanar(const struct intel_modifier_desc *md,
 				     const struct drm_format_info *info)
 {
+	int yuv_planes;
+
 	if (!info->is_yuv)
 		return false;
 
-	if (hweight8(md->ccs.planar_aux_planes) == 2)
-		return info->num_planes == 4;
+	if (is_ccs_type_modifier(md, INTEL_CCS_ANY))
+		yuv_planes = 4;
 	else
-		return info->num_planes == 2;
+		yuv_planes = 2;
+
+	return info->num_planes == yuv_planes;
 }
 
 /**
@@ -547,13 +522,12 @@ static unsigned int gen12_ccs_aux_stride(struct intel_framebuffer *fb, int ccs_p
 
 int skl_main_to_aux_plane(const struct drm_framebuffer *fb, int main_plane)
 {
-	const struct intel_modifier_desc *md = lookup_modifier(fb->modifier);
 	struct drm_i915_private *i915 = to_i915(fb->dev);
 
-	if (md->ccs.packed_aux_planes | md->ccs.planar_aux_planes)
+	if (intel_fb_is_ccs_modifier(fb->modifier))
 		return main_to_ccs_plane(fb, main_plane);
 	else if (DISPLAY_VER(i915) < 11 &&
-		 format_is_yuv_semiplanar(md, fb->format))
+		 intel_format_info_is_yuv_semiplanar(fb->format, fb->modifier))
 		return 1;
 	else
 		return 0;
@@ -578,15 +552,6 @@ intel_tile_width_bytes(const struct drm_framebuffer *fb, int color_plane)
 			return 128;
 		else
 			return 512;
-	case I915_FORMAT_MOD_4_TILED_DG2_RC_CCS:
-	case I915_FORMAT_MOD_4_TILED_DG2_RC_CCS_CC:
-	case I915_FORMAT_MOD_4_TILED_DG2_MC_CCS:
-	case I915_FORMAT_MOD_4_TILED:
-		/*
-		 * Each 4K tile consists of 64B(8*8) subtiles, with
-		 * same shape as Y Tile(i.e 4*16B OWords)
-		 */
-		return 128;
 	case I915_FORMAT_MOD_Y_TILED_CCS:
 		if (intel_fb_is_ccs_aux_plane(fb, color_plane))
 			return 128;
@@ -684,32 +649,7 @@ intel_fb_align_height(const struct drm_framebuffer *fb,
 
 static unsigned int intel_fb_modifier_to_tiling(u64 fb_modifier)
 {
-	u8 tiling_caps = lookup_modifier(fb_modifier)->plane_caps &
-			 INTEL_PLANE_CAP_TILING_MASK;
-
-	switch (tiling_caps) {
-	case INTEL_PLANE_CAP_TILING_Y:
-		return I915_TILING_Y;
-	case INTEL_PLANE_CAP_TILING_X:
-		return I915_TILING_X;
-	case INTEL_PLANE_CAP_TILING_4:
-	case INTEL_PLANE_CAP_TILING_Yf:
-	case INTEL_PLANE_CAP_TILING_NONE:
-		return I915_TILING_NONE;
-	default:
-		MISSING_CASE(tiling_caps);
-		return I915_TILING_NONE;
-	}
-}
-
-static bool intel_modifier_uses_dpt(struct drm_i915_private *i915, u64 modifier)
-{
-	return DISPLAY_VER(i915) >= 13 && modifier != DRM_FORMAT_MOD_LINEAR;
-}
-
-bool intel_fb_uses_dpt(const struct drm_framebuffer *fb)
-{
-	return fb && intel_modifier_uses_dpt(to_i915(fb->dev), fb->modifier);
+	return lookup_modifier(fb_modifier)->tiling;
 }
 
 unsigned int intel_cursor_alignment(const struct drm_i915_private *i915)
@@ -780,13 +720,8 @@ unsigned int intel_surf_alignment(const struct drm_framebuffer *fb,
 	case I915_FORMAT_MOD_Y_TILED_CCS:
 	case I915_FORMAT_MOD_Yf_TILED_CCS:
 	case I915_FORMAT_MOD_Y_TILED:
-	case I915_FORMAT_MOD_4_TILED:
 	case I915_FORMAT_MOD_Yf_TILED:
 		return 1 * 1024 * 1024;
-	case I915_FORMAT_MOD_4_TILED_DG2_RC_CCS:
-	case I915_FORMAT_MOD_4_TILED_DG2_RC_CCS_CC:
-	case I915_FORMAT_MOD_4_TILED_DG2_MC_CCS:
-		return 16 * 1024;
 	default:
 		MISSING_CASE(fb->modifier);
 		return 0;
@@ -2029,7 +1964,7 @@ intel_user_framebuffer_create(struct drm_device *dev,
 
 	/* object is backed with LMEM for discrete */
 	i915 = to_i915(obj->base.dev);
-	if (HAS_LMEM(i915) && !i915_gem_object_can_migrate(obj, INTEL_REGION_LMEM_0)) {
+	if (HAS_LMEM(i915) && !i915_gem_object_can_migrate(obj, INTEL_REGION_LMEM)) {
 		/* object is "remote", not in local memory */
 		i915_gem_object_put(obj);
 		return ERR_PTR(-EREMOTE);

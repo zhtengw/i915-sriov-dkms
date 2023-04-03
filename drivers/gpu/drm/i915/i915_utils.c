@@ -3,8 +3,6 @@
  * Copyright © 2019 Intel Corporation
  */
 
-#include <linux/device.h>
-
 #include <drm/drm_drv.h>
 
 #include "i915_drv.h"
@@ -117,15 +115,6 @@ void set_timer_ms(struct timer_list *t, unsigned long timeout)
 	mod_timer(t, jiffies + timeout ?: 1);
 }
 
-bool i915_vtd_active(struct drm_i915_private *i915)
-{
-	if (device_iommu_mapped(i915->drm.dev))
-		return true;
-
-	/* Running as a guest, we assume the host is enforcing VT'd */
-	return i915_run_as_guest();
-}
-
 /**
  * from_user_to_u32array - convert user input into array of u32
  * @from: user input
@@ -183,3 +172,4 @@ out_free:
 	kfree(buf);
 	return ret;
 }
+

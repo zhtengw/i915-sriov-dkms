@@ -6,7 +6,6 @@
 #include "i915_sriov.h"
 #include "i915_sriov_sysfs.h"
 #include "i915_drv.h"
-#include "intel_pci_config.h"
 
 #include "gt/intel_gt.h"
 #include "gt/intel_gt_pm.h"
@@ -180,7 +179,7 @@ static void vf_tweak_device_info(struct drm_i915_private *i915)
 	/* Force PCH_NOOP. We have no access to display */
 	i915->pch_type = PCH_NOP;
 	memset(&info->display, 0, sizeof(info->display));
-	info->display.pipe_mask = 0;
+	info->pipe_mask = 0;
 	info->memory_regions &= ~(REGION_STOLEN_SMEM |
 				  REGION_STOLEN_LMEM);
 }

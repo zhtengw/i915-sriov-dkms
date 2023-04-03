@@ -3,7 +3,6 @@
  * Copyright © 2020 Intel Corporation
  */
 #include "gt/intel_gt.h"
-#include "gt/intel_gt_regs.h"
 #include "i915_drv.h"
 #include "intel_pagefault.h"
 

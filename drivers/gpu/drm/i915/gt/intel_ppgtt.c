@@ -12,7 +12,7 @@
 #include "gen6_ppgtt.h"
 #include "gen8_ppgtt.h"
 
-struct i915_page_table *alloc_pt(struct i915_address_space *vm, int sz)
+struct i915_page_table *alloc_pt(struct i915_address_space *vm)
 {
 	struct i915_page_table *pt;
 
@@ -20,13 +20,12 @@ struct i915_page_table *alloc_pt(struct i915_address_space *vm, int sz)
 	if (unlikely(!pt))
 		return ERR_PTR(-ENOMEM);
 
-	pt->base = vm->alloc_pt_dma(vm, sz);
+	pt->base = vm->alloc_pt_dma(vm, I915_GTT_PAGE_SIZE_4K);
 	if (IS_ERR(pt->base)) {
 		kfree(pt);
 		return ERR_PTR(-ENOMEM);
 	}
 
-	pt->is_compact = false;
 	atomic_set(&pt->used, 0);
 	return pt;
 }
@@ -91,7 +90,7 @@ write_dma_entry(struct drm_i915_gem_object * const pdma,
 	u64 * const vaddr = __px_vaddr(pdma);
 
 	vaddr[idx] = encoded_entry;
-	drm_clflush_virt_range(&vaddr[idx], sizeof(u64));
+	clflush_cache_range(&vaddr[idx], sizeof(u64));
 }
 
 void
@@ -152,24 +151,34 @@ int i915_ppgtt_init_hw(struct intel_gt *gt)
 	else if (GRAPHICS_VER(i915) == 7)
 		gen7_ppgtt_enable(gt);
 
+	/*
+	 * Tell GAM that we want to use dual-ctx. The same address space will be
+	 * shared by RCS and CCS and the HW to use bit 47 as an indication of
+	 * the source unit, so the PPGTT size needs to be limited to 47b.
+	 * This restriction does not apply in multi-ctx mode.
+	 */
+	if (IS_TIGERLAKE(i915) || IS_DG1(i915) || IS_ALDERLAKE_S(i915) || IS_ALDERLAKE_P(i915))
+		if (HAS_ENGINE(gt, CCS0) && INTEL_INFO(i915)->ppgtt_size < 48)
+			intel_uncore_write(gt->uncore, GEN12_GAM_MULT_CTXT_CTL,
+					   _MASKED_BIT_ENABLE
+					   (GEN12_GAM_MULT_CTXT_ENABLE));
 	return 0;
 }
 
 static struct i915_ppgtt *
-__ppgtt_create(struct intel_gt *gt, unsigned long lmem_pt_obj_flags)
+__ppgtt_create(struct intel_gt *gt)
 {
 	if (GRAPHICS_VER(gt->i915) < 8)
 		return gen6_ppgtt_create(gt);
 	else
-		return gen8_ppgtt_create(gt, lmem_pt_obj_flags);
+		return gen8_ppgtt_create(gt);
 }
 
-struct i915_ppgtt *i915_ppgtt_create(struct intel_gt *gt,
-				     unsigned long lmem_pt_obj_flags)
+struct i915_ppgtt *i915_ppgtt_create(struct intel_gt *gt)
 {
 	struct i915_ppgtt *ppgtt;
 
-	ppgtt = __ppgtt_create(gt, lmem_pt_obj_flags);
+	ppgtt = __ppgtt_create(gt);
 	if (IS_ERR(ppgtt))
 		return ppgtt;
 
@@ -180,34 +189,32 @@ struct i915_ppgtt *i915_ppgtt_create(struct intel_gt *gt,
 
 void ppgtt_bind_vma(struct i915_address_space *vm,
 		    struct i915_vm_pt_stash *stash,
-		    struct i915_vma_resource *vma_res,
+		    struct i915_vma *vma,
 		    enum i915_cache_level cache_level,
 		    u32 flags)
 {
 	u32 pte_flags;
 
-	if (!vma_res->allocated) {
-		vm->allocate_va_range(vm, stash, vma_res->start,
-				      vma_res->vma_size);
-		vma_res->allocated = true;
+	if (!test_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma))) {
+		vm->allocate_va_range(vm, stash, vma->node.start, vma->size);
+		set_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma));
 	}
 
 	/* Applicable to VLV, and gen8+ */
 	pte_flags = 0;
-	if (vma_res->bi.readonly)
+	if (i915_gem_object_is_readonly(vma->obj))
 		pte_flags |= PTE_READ_ONLY;
-	if (vma_res->bi.lmem)
+	if (i915_gem_object_is_lmem(vma->obj))
 		pte_flags |= PTE_LM;
 
-	vm->insert_entries(vm, vma_res, cache_level, pte_flags);
+	vm->insert_entries(vm, vma, cache_level, pte_flags);
 	wmb();
 }
 
-void ppgtt_unbind_vma(struct i915_address_space *vm,
-		      struct i915_vma_resource *vma_res)
+void ppgtt_unbind_vma(struct i915_address_space *vm, struct i915_vma *vma)
 {
-	if (vma_res->allocated)
-		vm->clear_range(vm, vma_res->start, vma_res->vma_size);
+	if (test_and_clear_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma)))
+		vm->clear_range(vm, vma->node.start, vma->size);
 }
 
 static unsigned long pd_count(u64 size, int shift)
@@ -221,25 +228,17 @@ int i915_vm_alloc_pt_stash(struct i915_address_space *vm,
 			   u64 size)
 {
 	unsigned long count;
-	int shift, n, pt_sz;
+	int shift, n;
 
 	shift = vm->pd_shift;
 	if (!shift)
 		return 0;
 
-	pt_sz = stash->pt_sz;
-	if (!pt_sz)
-		pt_sz = I915_GTT_PAGE_SIZE_4K;
-	else
-		GEM_BUG_ON(!IS_DGFX(vm->i915));
-
-	GEM_BUG_ON(!is_power_of_2(pt_sz));
-
 	count = pd_count(size, shift);
 	while (count--) {
 		struct i915_page_table *pt;
 
-		pt = alloc_pt(vm, pt_sz);
+		pt = alloc_pt(vm);
 		if (IS_ERR(pt)) {
 			i915_vm_free_pt_stash(vm, stash);
 			return PTR_ERR(pt);
@@ -300,8 +299,17 @@ void i915_vm_free_pt_stash(struct i915_address_space *vm,
 	}
 }
 
-void ppgtt_init(struct i915_ppgtt *ppgtt, struct intel_gt *gt,
-		unsigned long lmem_pt_obj_flags)
+int ppgtt_set_pages(struct i915_vma *vma)
+{
+	GEM_BUG_ON(vma->pages);
+
+	vma->pages = vma->obj->mm.pages;
+	vma->page_sizes = vma->obj->mm.page_sizes;
+
+	return 0;
+}
+
+void ppgtt_init(struct i915_ppgtt *ppgtt, struct intel_gt *gt)
 {
 	struct drm_i915_private *i915 = gt->i915;
 
@@ -309,11 +317,12 @@ void ppgtt_init(struct i915_ppgtt *ppgtt, struct intel_gt *gt,
 	ppgtt->vm.i915 = i915;
 	ppgtt->vm.dma = i915->drm.dev;
 	ppgtt->vm.total = BIT_ULL(INTEL_INFO(i915)->ppgtt_size);
-	ppgtt->vm.lmem_pt_obj_flags = lmem_pt_obj_flags;
 
 	dma_resv_init(&ppgtt->vm._resv);
 	i915_address_space_init(&ppgtt->vm, VM_CLASS_PPGTT);
 
 	ppgtt->vm.vma_ops.bind_vma    = ppgtt_bind_vma;
 	ppgtt->vm.vma_ops.unbind_vma  = ppgtt_unbind_vma;
+	ppgtt->vm.vma_ops.set_pages   = ppgtt_set_pages;
+	ppgtt->vm.vma_ops.clear_pages = clear_pages;
 }

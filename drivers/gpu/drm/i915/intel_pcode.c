@@ -4,7 +4,6 @@
  */
 
 #include "i915_drv.h"
-#include "i915_reg.h"
 #include "intel_pcode.h"
 
 static int gen6_check_mailbox_status(u32 mbox)
@@ -52,10 +51,11 @@ static int gen7_check_mailbox_status(u32 mbox)
 	}
 }
 
-static int __snb_pcode_rw(struct drm_i915_private *i915, u32 mbox,
-			  u32 *val, u32 *val1,
-			  int fast_timeout_us, int slow_timeout_ms,
-			  bool is_read)
+static int __sandybridge_pcode_rw(struct drm_i915_private *i915,
+				  u32 mbox, u32 *val, u32 *val1,
+				  int fast_timeout_us,
+				  int slow_timeout_ms,
+				  bool is_read)
 {
 	struct intel_uncore *uncore = &i915->uncore;
 
@@ -94,12 +94,15 @@ static int __snb_pcode_rw(struct drm_i915_private *i915, u32 mbox,
 		return gen6_check_mailbox_status(mbox);
 }
 
-int snb_pcode_read(struct drm_i915_private *i915, u32 mbox, u32 *val, u32 *val1)
+int sandybridge_pcode_read(struct drm_i915_private *i915, u32 mbox,
+			   u32 *val, u32 *val1)
 {
 	int err;
 
 	mutex_lock(&i915->sb_lock);
-	err = __snb_pcode_rw(i915, mbox, val, val1, 500, 20, true);
+	err = __sandybridge_pcode_rw(i915, mbox, val, val1,
+				     500, 20,
+				     true);
 	mutex_unlock(&i915->sb_lock);
 
 	if (err) {
@@ -111,14 +114,17 @@ int snb_pcode_read(struct drm_i915_private *i915, u32 mbox, u32 *val, u32 *val1)
 	return err;
 }
 
-int snb_pcode_write_timeout(struct drm_i915_private *i915, u32 mbox, u32 val,
-			    int fast_timeout_us, int slow_timeout_ms)
+int sandybridge_pcode_write_timeout(struct drm_i915_private *i915,
+				    u32 mbox, u32 val,
+				    int fast_timeout_us,
+				    int slow_timeout_ms)
 {
 	int err;
 
 	mutex_lock(&i915->sb_lock);
-	err = __snb_pcode_rw(i915, mbox, &val, NULL,
-			     fast_timeout_us, slow_timeout_ms, false);
+	err = __sandybridge_pcode_rw(i915, mbox, &val, NULL,
+				     fast_timeout_us, slow_timeout_ms,
+				     false);
 	mutex_unlock(&i915->sb_lock);
 
 	if (err) {
@@ -134,9 +140,11 @@ static bool skl_pcode_try_request(struct drm_i915_private *i915, u32 mbox,
 				  u32 request, u32 reply_mask, u32 reply,
 				  u32 *status)
 {
-	*status = __snb_pcode_rw(i915, mbox, &request, NULL, 500, 0, true);
+	*status = __sandybridge_pcode_rw(i915, mbox, &request, NULL,
+					 500, 0,
+					 true);
 
-	return (*status == 0) && ((request & reply_mask) == reply);
+	return *status || ((request & reply_mask) == reply);
 }
 
 /**
@@ -202,7 +210,7 @@ int skl_pcode_request(struct drm_i915_private *i915, u32 mbox, u32 request,
 
 out:
 	mutex_unlock(&i915->sb_lock);
-	return status ? status : ret;
+	return ret ? ret : status;
 #undef COND
 }
 

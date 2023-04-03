@@ -10,7 +10,6 @@
 #include "abi/iov_actions_abi.h"
 #include "abi/iov_actions_mmio_abi.h"
 #include "abi/iov_version_abi.h"
-#include "gt/intel_gt_regs.h"
 #include "gt/uc/abi/guc_actions_vf_abi.h"
 #include "gt/uc/abi/guc_klvs_abi.h"
 #include "gt/uc/abi/guc_version_abi.h"
@@ -452,7 +451,7 @@ static void vf_show_runtime_info(struct intel_iov *iov)
 
 	GEM_BUG_ON(!intel_iov_is_vf(iov));
 
-	for (; size--; vf_regs++) {
+	for ( ; size--; vf_regs++) {
 		IOV_DEBUG(iov, "RUNTIME reg[%#x] = %#x\n",
 			  vf_regs->offset, vf_regs->value);
 	}

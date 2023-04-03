@@ -24,7 +24,6 @@
 #include <linux/random.h>
 
 #include "gt/intel_gt_pm.h"
-#include "i915_driver.h"
 #include "i915_drv.h"
 #include "i915_selftest.h"
 
@@ -299,10 +298,10 @@ int __i915_live_setup(void *data)
 	struct drm_i915_private *i915 = data;
 
 	/* The selftests expect an idle system */
-	if (intel_gt_pm_wait_for_idle(to_gt(i915)))
+	if (intel_gt_pm_wait_for_idle(&i915->gt))
 		return -EIO;
 
-	return intel_gt_terminally_wedged(to_gt(i915));
+	return intel_gt_terminally_wedged(&i915->gt);
 }
 
 int __i915_live_teardown(int err, void *data)

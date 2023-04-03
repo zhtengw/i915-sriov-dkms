@@ -77,7 +77,7 @@ void populate_pvinfo_page(struct intel_vgpu *vgpu)
 #define VGPU_WEIGHT(vgpu_num)	\
 	(VGPU_MAX_WEIGHT / (vgpu_num))
 
-static const struct {
+static struct {
 	unsigned int low_mm;
 	unsigned int high_mm;
 	unsigned int fence;
@@ -88,7 +88,7 @@ static const struct {
 	 */
 	unsigned int weight;
 	enum intel_vgpu_edid edid;
-	const char *name;
+	char *name;
 } vgpu_types[] = {
 /* Fixed vGPU type table */
 	{ MB_TO_BYTES(64), MB_TO_BYTES(384), 4, VGPU_WEIGHT(8), GVT_EDID_1024_768, "8" },

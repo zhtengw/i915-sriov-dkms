@@ -4,9 +4,8 @@
  * Copyright © 2008,2010 Intel Corporation
  */
 
-#include <linux/dma-resv.h>
-#include <linux/highmem.h>
 #include <linux/intel-iommu.h>
+#include <linux/dma-resv.h>
 #include <linux/sync_file.h>
 #include <linux/uaccess.h>
 
@@ -24,12 +23,9 @@
 
 #include "pxp/intel_pxp.h"
 
-#include "i915_cmd_parser.h"
 #include "i915_drv.h"
-#include "i915_file_private.h"
 #include "i915_gem_clflush.h"
 #include "i915_gem_context.h"
-#include "i915_gem_evict.h"
 #include "i915_gem_ioctls.h"
 #include "i915_trace.h"
 #include "i915_user_extensions.h"
@@ -312,15 +308,11 @@ struct i915_execbuffer {
 
 	struct eb_fence *fences;
 	unsigned long num_fences;
-#if IS_ENABLED(CONFIG_DRM_I915_CAPTURE_ERROR)
-	struct i915_capture_list *capture_lists[MAX_ENGINE_INSTANCE + 1];
-#endif
 };
 
 static int eb_parse(struct i915_execbuffer *eb);
 static int eb_pin_engine(struct i915_execbuffer *eb, bool throttle);
 static void eb_unpin_engine(struct i915_execbuffer *eb);
-static void eb_capture_release(struct i915_execbuffer *eb);
 
 static inline bool eb_use_cmdparser(const struct i915_execbuffer *eb)
 {
@@ -445,7 +437,7 @@ eb_pin_vma(struct i915_execbuffer *eb,
 	else
 		pin_flags = entry->offset & PIN_OFFSET_MASK;
 
-	pin_flags |= PIN_USER | PIN_NOEVICT | PIN_OFFSET_FIXED | PIN_VALIDATE;
+	pin_flags |= PIN_USER | PIN_NOEVICT | PIN_OFFSET_FIXED;
 	if (unlikely(ev->flags & EXEC_OBJECT_NEEDS_GTT))
 		pin_flags |= PIN_GLOBAL;
 
@@ -463,15 +455,17 @@ eb_pin_vma(struct i915_execbuffer *eb,
 					     entry->pad_to_size,
 					     entry->alignment,
 					     eb_pin_flags(entry, ev->flags) |
-					     PIN_USER | PIN_NOEVICT | PIN_VALIDATE);
+					     PIN_USER | PIN_NOEVICT);
 		if (unlikely(err))
 			return err;
 	}
 
 	if (unlikely(ev->flags & EXEC_OBJECT_NEEDS_FENCE)) {
 		err = i915_vma_pin_fence(vma);
-		if (unlikely(err))
+		if (unlikely(err)) {
+			i915_vma_unpin(vma);
 			return err;
+		}
 
 		if (vma->fence)
 			ev->flags |= __EXEC_OBJECT_HAS_FENCE;
@@ -487,9 +481,13 @@ eb_pin_vma(struct i915_execbuffer *eb,
 static inline void
 eb_unreserve_vma(struct eb_vma *ev)
 {
+	if (!(ev->flags & __EXEC_OBJECT_HAS_PIN))
+		return;
+
 	if (unlikely(ev->flags & __EXEC_OBJECT_HAS_FENCE))
 		__i915_vma_unpin_fence(ev->vma);
 
+	__i915_vma_unpin(ev->vma);
 	ev->flags &= ~__EXEC_OBJECT_RESERVED;
 }
 
@@ -671,8 +669,10 @@ static int eb_reserve_vma(struct i915_execbuffer *eb,
 
 	if (unlikely(ev->flags & EXEC_OBJECT_NEEDS_FENCE)) {
 		err = i915_vma_pin_fence(vma);
-		if (unlikely(err))
+		if (unlikely(err)) {
+			i915_vma_unpin(vma);
 			return err;
+		}
 
 		if (vma->fence)
 			ev->flags |= __EXEC_OBJECT_HAS_FENCE;
@@ -684,95 +684,85 @@ static int eb_reserve_vma(struct i915_execbuffer *eb,
 	return 0;
 }
 
-static bool eb_unbind(struct i915_execbuffer *eb, bool force)
-{
-	const unsigned int count = eb->buffer_count;
-	unsigned int i;
-	struct list_head last;
-	bool unpinned = false;
-
-	/* Resort *all* the objects into priority order */
-	INIT_LIST_HEAD(&eb->unbound);
-	INIT_LIST_HEAD(&last);
-
-	for (i = 0; i < count; i++) {
-		struct eb_vma *ev = &eb->vma[i];
-		unsigned int flags = ev->flags;
-
-		if (!force && flags & EXEC_OBJECT_PINNED &&
-		    flags & __EXEC_OBJECT_HAS_PIN)
-			continue;
-
-		unpinned = true;
-		eb_unreserve_vma(ev);
-
-		if (flags & EXEC_OBJECT_PINNED)
-			/* Pinned must have their slot */
-			list_add(&ev->bind_link, &eb->unbound);
-		else if (flags & __EXEC_OBJECT_NEEDS_MAP)
-			/* Map require the lowest 256MiB (aperture) */
-			list_add_tail(&ev->bind_link, &eb->unbound);
-		else if (!(flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS))
-			/* Prioritise 4GiB region for restricted bo */
-			list_add(&ev->bind_link, &last);
-		else
-			list_add_tail(&ev->bind_link, &last);
-	}
-
-	list_splice_tail(&last, &eb->unbound);
-	return unpinned;
-}
-
 static int eb_reserve(struct i915_execbuffer *eb)
 {
+	const unsigned int count = eb->buffer_count;
+	unsigned int pin_flags = PIN_USER | PIN_NONBLOCK;
+	struct list_head last;
 	struct eb_vma *ev;
-	unsigned int pass;
+	unsigned int i, pass;
 	int err = 0;
-	bool unpinned;
 
 	/*
 	 * Attempt to pin all of the buffers into the GTT.
-	 * This is done in 2 phases:
+	 * This is done in 3 phases:
 	 *
-	 * 1. Unbind all objects that do not match the GTT constraints for
-	 *    the execbuffer (fenceable, mappable, alignment etc).
-	 * 2. Bind new objects.
+	 * 1a. Unbind all objects that do not match the GTT constraints for
+	 *     the execbuffer (fenceable, mappable, alignment etc).
+	 * 1b. Increment pin count for already bound objects.
+	 * 2.  Bind new objects.
+	 * 3.  Decrement pin count.
 	 *
 	 * This avoid unnecessary unbinding of later objects in order to make
 	 * room for the earlier objects *unless* we need to defragment.
-	 *
-	 * Defragmenting is skipped if all objects are pinned at a fixed location.
 	 */
-	for (pass = 0; pass <= 2; pass++) {
-		int pin_flags = PIN_USER | PIN_VALIDATE;
-
-		if (pass == 0)
-			pin_flags |= PIN_NONBLOCK;
-
-		if (pass >= 1)
-			unpinned = eb_unbind(eb, pass == 2);
-
-		if (pass == 2) {
-			err = mutex_lock_interruptible(&eb->context->vm->mutex);
-			if (!err) {
-				err = i915_gem_evict_vm(eb->context->vm, &eb->ww);
-				mutex_unlock(&eb->context->vm->mutex);
-			}
-			if (err)
-				return err;
-		}
-
+	pass = 0;
+	do {
 		list_for_each_entry(ev, &eb->unbound, bind_link) {
 			err = eb_reserve_vma(eb, ev, pin_flags);
 			if (err)
 				break;
 		}
-
 		if (err != -ENOSPC)
-			break;
-	}
+			return err;
 
-	return err;
+		/* Resort *all* the objects into priority order */
+		INIT_LIST_HEAD(&eb->unbound);
+		INIT_LIST_HEAD(&last);
+		for (i = 0; i < count; i++) {
+			unsigned int flags;
+
+			ev = &eb->vma[i];
+			flags = ev->flags;
+			if (flags & EXEC_OBJECT_PINNED &&
+			    flags & __EXEC_OBJECT_HAS_PIN)
+				continue;
+
+			eb_unreserve_vma(ev);
+
+			if (flags & EXEC_OBJECT_PINNED)
+				/* Pinned must have their slot */
+				list_add(&ev->bind_link, &eb->unbound);
+			else if (flags & __EXEC_OBJECT_NEEDS_MAP)
+				/* Map require the lowest 256MiB (aperture) */
+				list_add_tail(&ev->bind_link, &eb->unbound);
+			else if (!(flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS))
+				/* Prioritise 4GiB region for restricted bo */
+				list_add(&ev->bind_link, &last);
+			else
+				list_add_tail(&ev->bind_link, &last);
+		}
+		list_splice_tail(&last, &eb->unbound);
+
+		switch (pass++) {
+		case 0:
+			break;
+
+		case 1:
+			/* Too fragmented, unbind everything and retry */
+			mutex_lock(&eb->context->vm->mutex);
+			err = i915_gem_evict_vm(eb->context->vm);
+			mutex_unlock(&eb->context->vm->mutex);
+			if (err)
+				return err;
+			break;
+
+		default:
+			return -ENOSPC;
+		}
+
+		pin_flags = PIN_USER;
+	} while (1);
 }
 
 static int eb_select_context(struct i915_execbuffer *eb)
@@ -1000,9 +990,11 @@ static int eb_validate_vmas(struct i915_execbuffer *eb)
 			}
 		}
 
-		err = dma_resv_reserve_fences(vma->obj->base.resv, 1);
-		if (err)
-			return err;
+		if (!(ev->flags & EXEC_OBJECT_WRITE)) {
+			err = dma_resv_reserve_shared(vma->resv, 1);
+			if (err)
+				return err;
+		}
 
 		GEM_BUG_ON(drm_mm_node_allocated(&vma->node) &&
 			   eb_vma_misplaced(&eb->exec[i], vma, ev->flags));
@@ -1052,7 +1044,6 @@ static void eb_release_vmas(struct i915_execbuffer *eb, bool final)
 			i915_vma_put(vma);
 	}
 
-	eb_capture_release(eb);
 	eb_unpin_engine(eb);
 }
 
@@ -1099,48 +1090,7 @@ static inline struct i915_ggtt *cache_to_ggtt(struct reloc_cache *cache)
 {
 	struct drm_i915_private *i915 =
 		container_of(cache, struct i915_execbuffer, reloc_cache)->i915;
-	return to_gt(i915)->ggtt;
-}
-
-static void reloc_cache_unmap(struct reloc_cache *cache)
-{
-	void *vaddr;
-
-	if (!cache->vaddr)
-		return;
-
-	vaddr = unmask_page(cache->vaddr);
-	if (cache->vaddr & KMAP)
-		kunmap_atomic(vaddr);
-	else
-		io_mapping_unmap_atomic((void __iomem *)vaddr);
-}
-
-static void reloc_cache_remap(struct reloc_cache *cache,
-			      struct drm_i915_gem_object *obj)
-{
-	void *vaddr;
-
-	if (!cache->vaddr)
-		return;
-
-	if (cache->vaddr & KMAP) {
-		struct page *page = i915_gem_object_get_page(obj, cache->page);
-
-		vaddr = kmap_atomic(page);
-		cache->vaddr = unmask_flags(cache->vaddr) |
-			(unsigned long)vaddr;
-	} else {
-		struct i915_ggtt *ggtt = cache_to_ggtt(cache);
-		unsigned long offset;
-
-		offset = cache->node.start;
-		if (!drm_mm_node_allocated(&cache->node))
-			offset += cache->page << PAGE_SHIFT;
-
-		cache->vaddr = (unsigned long)
-			io_mapping_map_atomic_wc(&ggtt->iomap, offset);
-	}
+	return &i915->ggtt;
 }
 
 static void reloc_cache_reset(struct reloc_cache *cache, struct i915_execbuffer *eb)
@@ -1218,11 +1168,10 @@ static void *reloc_kmap(struct drm_i915_gem_object *obj,
 	return vaddr;
 }
 
-static void *reloc_iomap(struct i915_vma *batch,
+static void *reloc_iomap(struct drm_i915_gem_object *obj,
 			 struct i915_execbuffer *eb,
 			 unsigned long page)
 {
-	struct drm_i915_gem_object *obj = batch->obj;
 	struct reloc_cache *cache = &eb->reloc_cache;
 	struct i915_ggtt *ggtt = cache_to_ggtt(cache);
 	unsigned long offset;
@@ -1232,7 +1181,7 @@ static void *reloc_iomap(struct i915_vma *batch,
 		intel_gt_flush_ggtt_writes(ggtt->vm.gt);
 		io_mapping_unmap_atomic((void __force __iomem *) unmask_page(cache->vaddr));
 	} else {
-		struct i915_vma *vma = ERR_PTR(-ENODEV);
+		struct i915_vma *vma;
 		int err;
 
 		if (i915_gem_object_is_tiled(obj))
@@ -1245,23 +1194,10 @@ static void *reloc_iomap(struct i915_vma *batch,
 		if (err)
 			return ERR_PTR(err);
 
-		/*
-		 * i915_gem_object_ggtt_pin_ww may attempt to remove the batch
-		 * VMA from the object list because we no longer pin.
-		 *
-		 * Only attempt to pin the batch buffer to ggtt if the current batch
-		 * is not inside ggtt, or the batch buffer is not misplaced.
-		 */
-		if (!i915_is_ggtt(batch->vm)) {
-			vma = i915_gem_object_ggtt_pin_ww(obj, &eb->ww, NULL, 0, 0,
-							  PIN_MAPPABLE |
-							  PIN_NONBLOCK /* NOWARN */ |
-							  PIN_NOEVICT);
-		} else if (i915_vma_is_map_and_fenceable(batch)) {
-			__i915_vma_pin(batch);
-			vma = batch;
-		}
-
+		vma = i915_gem_object_ggtt_pin_ww(obj, &eb->ww, NULL, 0, 0,
+						  PIN_MAPPABLE |
+						  PIN_NONBLOCK /* NOWARN */ |
+						  PIN_NOEVICT);
 		if (vma == ERR_PTR(-EDEADLK))
 			return vma;
 
@@ -1299,7 +1235,7 @@ static void *reloc_iomap(struct i915_vma *batch,
 	return vaddr;
 }
 
-static void *reloc_vaddr(struct i915_vma *vma,
+static void *reloc_vaddr(struct drm_i915_gem_object *obj,
 			 struct i915_execbuffer *eb,
 			 unsigned long page)
 {
@@ -1311,9 +1247,9 @@ static void *reloc_vaddr(struct i915_vma *vma,
 	} else {
 		vaddr = NULL;
 		if ((cache->vaddr & KMAP) == 0)
-			vaddr = reloc_iomap(vma, eb, page);
+			vaddr = reloc_iomap(obj, eb, page);
 		if (!vaddr)
-			vaddr = reloc_kmap(vma->obj, cache, page);
+			vaddr = reloc_kmap(obj, cache, page);
 	}
 
 	return vaddr;
@@ -1322,8 +1258,10 @@ static void *reloc_vaddr(struct i915_vma *vma,
 static void clflush_write32(u32 *addr, u32 value, unsigned int flushes)
 {
 	if (unlikely(flushes & (CLFLUSH_BEFORE | CLFLUSH_AFTER))) {
-		if (flushes & CLFLUSH_BEFORE)
-			drm_clflush_virt_range(addr, sizeof(*addr));
+		if (flushes & CLFLUSH_BEFORE) {
+			clflushopt(addr);
+			mb();
+		}
 
 		*addr = value;
 
@@ -1335,7 +1273,7 @@ static void clflush_write32(u32 *addr, u32 value, unsigned int flushes)
 		 * to ensure ordering of clflush wrt to the system.
 		 */
 		if (flushes & CLFLUSH_AFTER)
-			drm_clflush_virt_range(addr, sizeof(*addr));
+			clflushopt(addr);
 	} else
 		*addr = value;
 }
@@ -1352,7 +1290,7 @@ relocate_entry(struct i915_vma *vma,
 	void *vaddr;
 
 repeat:
-	vaddr = reloc_vaddr(vma, eb,
+	vaddr = reloc_vaddr(vma->obj, eb,
 			    offset >> PAGE_SHIFT);
 	if (IS_ERR(vaddr))
 		return PTR_ERR(vaddr);
@@ -1419,17 +1357,10 @@ eb_relocate_entry(struct i915_execbuffer *eb,
 		 * batchbuffers.
 		 */
 		if (reloc->write_domain == I915_GEM_DOMAIN_INSTRUCTION &&
-		    GRAPHICS_VER(eb->i915) == 6 &&
-		    !i915_vma_is_bound(target->vma, I915_VMA_GLOBAL_BIND)) {
-			struct i915_vma *vma = target->vma;
-
-			reloc_cache_unmap(&eb->reloc_cache);
-			mutex_lock(&vma->vm->mutex);
+		    GRAPHICS_VER(eb->i915) == 6) {
 			err = i915_vma_bind(target->vma,
 					    target->vma->obj->cache_level,
-					    PIN_GLOBAL, NULL, NULL);
-			mutex_unlock(&vma->vm->mutex);
-			reloc_cache_remap(&eb->reloc_cache, ev->vma->obj);
+					    PIN_GLOBAL, NULL);
 			if (err)
 				return err;
 		}
@@ -1950,93 +1881,6 @@ eb_find_first_request_added(struct i915_execbuffer *eb)
 	return NULL;
 }
 
-#if IS_ENABLED(CONFIG_DRM_I915_CAPTURE_ERROR)
-
-/* Stage with GFP_KERNEL allocations before we enter the signaling critical path */
-static void eb_capture_stage(struct i915_execbuffer *eb)
-{
-	const unsigned int count = eb->buffer_count;
-	unsigned int i = count, j;
-
-	while (i--) {
-		struct eb_vma *ev = &eb->vma[i];
-		struct i915_vma *vma = ev->vma;
-		unsigned int flags = ev->flags;
-
-		if (!(flags & EXEC_OBJECT_CAPTURE))
-			continue;
-
-		for_each_batch_create_order(eb, j) {
-			struct i915_capture_list *capture;
-
-			capture = kmalloc(sizeof(*capture), GFP_KERNEL);
-			if (!capture)
-				continue;
-
-			capture->next = eb->capture_lists[j];
-			capture->vma_res = i915_vma_resource_get(vma->resource);
-			eb->capture_lists[j] = capture;
-		}
-	}
-}
-
-/* Commit once we're in the critical path */
-static void eb_capture_commit(struct i915_execbuffer *eb)
-{
-	unsigned int j;
-
-	for_each_batch_create_order(eb, j) {
-		struct i915_request *rq = eb->requests[j];
-
-		if (!rq)
-			break;
-
-		rq->capture_list = eb->capture_lists[j];
-		eb->capture_lists[j] = NULL;
-	}
-}
-
-/*
- * Release anything that didn't get committed due to errors.
- * The capture_list will otherwise be freed at request retire.
- */
-static void eb_capture_release(struct i915_execbuffer *eb)
-{
-	unsigned int j;
-
-	for_each_batch_create_order(eb, j) {
-		if (eb->capture_lists[j]) {
-			i915_request_free_capture_list(eb->capture_lists[j]);
-			eb->capture_lists[j] = NULL;
-		}
-	}
-}
-
-static void eb_capture_list_clear(struct i915_execbuffer *eb)
-{
-	memset(eb->capture_lists, 0, sizeof(eb->capture_lists));
-}
-
-#else
-
-static void eb_capture_stage(struct i915_execbuffer *eb)
-{
-}
-
-static void eb_capture_commit(struct i915_execbuffer *eb)
-{
-}
-
-static void eb_capture_release(struct i915_execbuffer *eb)
-{
-}
-
-static void eb_capture_list_clear(struct i915_execbuffer *eb)
-{
-}
-
-#endif
-
 static int eb_move_to_gpu(struct i915_execbuffer *eb)
 {
 	const unsigned int count = eb->buffer_count;
@@ -2050,6 +1894,23 @@ static int eb_move_to_gpu(struct i915_execbuffer *eb)
 		struct drm_i915_gem_object *obj = vma->obj;
 
 		assert_vma_held(vma);
+
+		if (flags & EXEC_OBJECT_CAPTURE) {
+			struct i915_capture_list *capture;
+
+			for_each_batch_create_order(eb, j) {
+				if (!eb->requests[j])
+					break;
+
+				capture = kmalloc(sizeof(*capture), GFP_KERNEL);
+				if (capture) {
+					capture->next =
+						eb->requests[j]->capture_list;
+					capture->vma = vma;
+					eb->requests[j]->capture_list = capture;
+				}
+			}
+		}
 
 		/*
 		 * If the GPU is not _reading_ through the CPU cache, we need
@@ -2130,8 +1991,6 @@ static int eb_move_to_gpu(struct i915_execbuffer *eb)
 
 	/* Unconditionally flush any chipset caches (for streaming writes). */
 	intel_gt_chipset_flush(eb->gt);
-	eb_capture_commit(eb);
-
 	return 0;
 
 err_skip:
@@ -2207,7 +2066,7 @@ shadow_batch_pin(struct i915_execbuffer *eb,
 	if (IS_ERR(vma))
 		return vma;
 
-	err = i915_vma_pin_ww(vma, &eb->ww, 0, 0, flags | PIN_VALIDATE);
+	err = i915_vma_pin_ww(vma, &eb->ww, 0, 0, flags);
 	if (err)
 		return ERR_PTR(err);
 
@@ -2221,7 +2080,7 @@ static struct i915_vma *eb_dispatch_secure(struct i915_execbuffer *eb, struct i9
 	 * batch" bit. Hence we need to pin secure batches into the global gtt.
 	 * hsw should have this fixed, but bdw mucks it up again. */
 	if (eb->batch_flags & I915_DISPATCH_SECURE)
-		return i915_gem_object_ggtt_pin_ww(vma->obj, &eb->ww, NULL, 0, 0, PIN_VALIDATE);
+		return i915_gem_object_ggtt_pin_ww(vma->obj, &eb->ww, NULL, 0, 0, 0);
 
 	return NULL;
 }
@@ -2272,12 +2131,13 @@ static int eb_parse(struct i915_execbuffer *eb)
 
 	err = i915_gem_object_lock(pool->obj, &eb->ww);
 	if (err)
-		return err;
+		goto err;
 
 	shadow = shadow_batch_pin(eb, pool->obj, eb->context->vm, PIN_USER);
-	if (IS_ERR(shadow))
-		return PTR_ERR(shadow);
-
+	if (IS_ERR(shadow)) {
+		err = PTR_ERR(shadow);
+		goto err;
+	}
 	intel_gt_buffer_pool_mark_used(pool);
 	i915_gem_object_set_readonly(shadow->obj);
 	shadow->private = pool;
@@ -2289,21 +2149,25 @@ static int eb_parse(struct i915_execbuffer *eb)
 		shadow = shadow_batch_pin(eb, pool->obj,
 					  &eb->gt->ggtt->vm,
 					  PIN_GLOBAL);
-		if (IS_ERR(shadow))
-			return PTR_ERR(shadow);
-
+		if (IS_ERR(shadow)) {
+			err = PTR_ERR(shadow);
+			shadow = trampoline;
+			goto err_shadow;
+		}
 		shadow->private = pool;
 
 		eb->batch_flags |= I915_DISPATCH_SECURE;
 	}
 
 	batch = eb_dispatch_secure(eb, shadow);
-	if (IS_ERR(batch))
-		return PTR_ERR(batch);
+	if (IS_ERR(batch)) {
+		err = PTR_ERR(batch);
+		goto err_trampoline;
+	}
 
-	err = dma_resv_reserve_fences(shadow->obj->base.resv, 1);
+	err = dma_resv_reserve_shared(shadow->resv, 1);
 	if (err)
-		return err;
+		goto err_trampoline;
 
 	err = intel_engine_cmd_parser(eb->context->engine,
 				      eb->batches[0]->vma,
@@ -2311,7 +2175,7 @@ static int eb_parse(struct i915_execbuffer *eb)
 				      eb->batch_len[0],
 				      shadow, trampoline);
 	if (err)
-		return err;
+		goto err_unpin_batch;
 
 	eb->batches[0] = &eb->vma[eb->buffer_count++];
 	eb->batches[0]->vma = i915_vma_get(shadow);
@@ -2330,6 +2194,17 @@ secure_batch:
 		eb->batches[0]->vma = i915_vma_get(batch);
 	}
 	return 0;
+
+err_unpin_batch:
+	if (batch)
+		i915_vma_unpin(batch);
+err_trampoline:
+	if (trampoline)
+		i915_vma_unpin(trampoline);
+err_shadow:
+	i915_vma_unpin(shadow);
+err:
+	return err;
 }
 
 static int eb_request_submit(struct i915_execbuffer *eb,
@@ -2402,9 +2277,9 @@ static int eb_submit(struct i915_execbuffer *eb)
 	return err;
 }
 
-static int num_vcs_engines(struct drm_i915_private *i915)
+static int num_vcs_engines(const struct drm_i915_private *i915)
 {
-	return hweight_long(VDBOX_MASK(to_gt(i915)));
+	return hweight_long(VDBOX_MASK(&i915->gt));
 }
 
 /*
@@ -2498,14 +2373,9 @@ static int eb_pin_timeline(struct i915_execbuffer *eb, struct intel_context *ce,
 				      timeout) < 0) {
 			i915_request_put(rq);
 
-			/*
-			 * Error path, cannot use intel_context_timeline_lock as
-			 * that is user interruptable and this clean up step
-			 * must be done.
-			 */
-			mutex_lock(&ce->timeline->mutex);
+			tl = intel_context_timeline_lock(ce);
 			intel_context_exit(ce);
-			mutex_unlock(&ce->timeline->mutex);
+			intel_context_timeline_unlock(tl);
 
 			if (nonblock)
 				return -EWOULDBLOCK;
@@ -2689,11 +2559,6 @@ eb_select_engine(struct i915_execbuffer *eb)
 	if (err)
 		goto err;
 
-	if (!i915_vm_tryget(ce->vm)) {
-		err = -ENOENT;
-		goto err;
-	}
-
 	eb->context = ce;
 	eb->gt = ce->engine->gt;
 
@@ -2717,7 +2582,6 @@ eb_put_engine(struct i915_execbuffer *eb)
 {
 	struct intel_context *child;
 
-	i915_vm_put(eb->context->vm);
 	intel_gt_pm_put(eb->context->engine->gt, eb->wakeref);
 	for_each_child(eb->context, child)
 		intel_context_put(child);
@@ -3154,7 +3018,7 @@ eb_composite_fence_create(struct i915_execbuffer *eb, int out_fence_fd)
 	fence_array = dma_fence_array_create(eb->num_batches,
 					     fences,
 					     eb->context->parallel.fence_context,
-					     eb->context->parallel.seqno++,
+					     eb->context->parallel.seqno,
 					     false);
 	if (!fence_array) {
 		kfree(fences);
@@ -3251,7 +3115,7 @@ eb_requests_create(struct i915_execbuffer *eb, struct dma_fence *in_fence,
 		/* Allocate a request for this batch buffer nice and early. */
 		eb->requests[i] = i915_request_create(eb_find_context(eb, i));
 		if (IS_ERR(eb->requests[i])) {
-			out_fence = ERR_CAST(eb->requests[i]);
+			out_fence = ERR_PTR(PTR_ERR(eb->requests[i]));
 			eb->requests[i] = NULL;
 			return out_fence;
 		}
@@ -3269,13 +3133,13 @@ eb_requests_create(struct i915_execbuffer *eb, struct dma_fence *in_fence,
 		}
 
 		/*
-		 * Not really on stack, but we don't want to call
-		 * kfree on the batch_snapshot when we put it, so use the
-		 * _onstack interface.
+		 * Whilst this request exists, batch_obj will be on the
+		 * active_list, and so will hold the active reference. Only when
+		 * this request is retired will the batch_obj be moved onto
+		 * the inactive_list and lose its active reference. Hence we do
+		 * not need to explicitly hold another reference here.
 		 */
-		if (eb->batches[i]->vma)
-			eb->requests[i]->batch_res =
-				i915_vma_resource_get(eb->batches[i]->vma->resource);
+		eb->requests[i]->batch = eb->batches[i]->vma;
 		if (eb->batch_pool) {
 			GEM_BUG_ON(intel_context_is_parallel(eb->context));
 			intel_gt_buffer_pool_mark_active(eb->batch_pool,
@@ -3323,8 +3187,6 @@ i915_gem_do_execbuffer(struct drm_device *dev,
 
 	eb.fences = NULL;
 	eb.num_fences = 0;
-
-	eb_capture_list_clear(&eb);
 
 	memset(eb.requests, 0, sizeof(struct i915_request *) *
 	       ARRAY_SIZE(eb.requests));
@@ -3417,12 +3279,10 @@ i915_gem_do_execbuffer(struct drm_device *dev,
 	}
 
 	ww_acquire_done(&eb.ww.ctx);
-	eb_capture_stage(&eb);
 
 	out_fence = eb_requests_create(&eb, in_fence, out_fence_fd);
 	if (IS_ERR(out_fence)) {
 		err = PTR_ERR(out_fence);
-		out_fence = NULL;
 		if (eb.requests[0])
 			goto err_request;
 		else
@@ -3465,6 +3325,8 @@ err_request:
 
 err_vma:
 	eb_release_vmas(&eb, true);
+	if (eb.trampoline)
+		i915_vma_unpin(eb.trampoline);
 	WARN_ON(err == -EDEADLK);
 	i915_gem_ww_ctx_fini(&eb.ww);
 

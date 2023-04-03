@@ -3,15 +3,12 @@
  * Copyright © 2016-2019 Intel Corporation
  */
 
-#include <linux/string_helpers.h>
-
 #include "gt/intel_gt.h"
 #include "gt/intel_reset.h"
 #include "gt/iov/intel_iov_query.h"
 #include "intel_guc.h"
 #include "intel_guc_ads.h"
 #include "intel_guc_submission.h"
-#include "gt/intel_rps.h"
 #include "intel_uc.h"
 
 #include "i915_drv.h"
@@ -40,7 +37,7 @@ static void uc_expand_default_options(struct intel_uc *uc)
 	}
 
 	/* Intermediate platforms are HuC authentication only */
-	if (IS_ALDERLAKE_S(i915) && !IS_ADLS_RPLS(i915)) {
+	if (IS_ALDERLAKE_S(i915)) {
 		i915->params.enable_guc = ENABLE_GUC_LOAD_HUC;
 		return;
 	}
@@ -82,10 +79,10 @@ static void __confirm_options(struct intel_uc *uc)
 	drm_dbg(&i915->drm,
 		"enable_guc=%d (guc:%s submission:%s huc:%s slpc:%s)\n",
 		i915->params.enable_guc,
-		str_yes_no(intel_uc_wants_guc(uc)),
-		str_yes_no(intel_uc_wants_guc_submission(uc)),
-		str_yes_no(intel_uc_wants_huc(uc)),
-		str_yes_no(intel_uc_wants_guc_slpc(uc)));
+		yesno(intel_uc_wants_guc(uc)),
+		yesno(intel_uc_wants_guc_submission(uc)),
+		yesno(intel_uc_wants_huc(uc)),
+		yesno(intel_uc_wants_guc_slpc(uc)));
 
 	if (i915->params.enable_guc == 0) {
 		GEM_BUG_ON(intel_uc_wants_guc(uc));
@@ -335,17 +332,10 @@ static int __uc_init(struct intel_uc *uc)
 	if (ret)
 		return ret;
 
-	if (intel_uc_uses_huc(uc)) {
-		ret = intel_huc_init(huc);
-		if (ret)
-			goto out_guc;
-	}
+	if (intel_uc_uses_huc(uc))
+		intel_huc_init(huc);
 
 	return 0;
-
-out_guc:
-	intel_guc_fini(guc);
-	return ret;
 }
 
 static void __uc_fini(struct intel_uc *uc)
@@ -450,9 +440,11 @@ static void print_fw_ver(struct intel_uc *uc, struct intel_uc_fw *fw)
 {
 	struct drm_i915_private *i915 = uc_to_gt(uc)->i915;
 
-	drm_info(&i915->drm, "%s firmware %s version %u.%u\n",
-		 intel_uc_fw_type_repr(fw->type), fw->path,
-		 fw->major_ver_found, fw->minor_ver_found);
+	drm_info(&i915->drm, "%s firmware %s version %u.%u.%u\n",
+		 intel_uc_fw_type_repr(fw->type), fw->file_selected.path,
+		 fw->file_selected.major_ver,
+		 fw->file_selected.minor_ver,
+		 fw->file_selected.patch_ver);
 }
 
 static int __uc_init_hw(struct intel_uc *uc)
@@ -491,8 +483,6 @@ static int __uc_init_hw(struct intel_uc *uc)
 	else
 		attempts = 1;
 
-	intel_rps_raise_unslice(&uc_to_gt(uc)->rps);
-
 	while (attempts--) {
 		/*
 		 * Always reset the GuC just before (re)loading, so
@@ -521,7 +511,25 @@ static int __uc_init_hw(struct intel_uc *uc)
 	if (ret)
 		goto err_log_capture;
 
-	intel_huc_auth(huc);
+	/*
+	 * GSC-loaded HuC is authenticated by the GSC, so we don't need to
+	 * trigger the auth here. However, given that the HuC loaded this way
+	 * survive GT reset, we still need to update our SW bookkeeping to make
+	 * sure it reflects the correct HW status.
+	 */
+	if (intel_huc_is_loaded_by_gsc(huc))
+		intel_huc_update_auth_status(huc);
+	else
+		intel_huc_auth(huc);
+
+	/*
+	 * Ignore table load failures for now. Missing tables will cause issues
+	 * for UMDs but won't prevent the i915 driver from working. So just
+	 * report the error and keep going.
+	 */
+	ret = intel_guc_hwconfig_init(&guc->hwconfig);
+	if (ret)
+		i915_probe_error(i915, "Failed to retrieve hwconfig table: %d\n", ret);
 
 	if (intel_uc_uses_guc_submission(uc))
 		intel_guc_submission_enable(guc);
@@ -530,15 +538,13 @@ static int __uc_init_hw(struct intel_uc *uc)
 		ret = intel_guc_slpc_enable(&guc->slpc);
 		if (ret)
 			goto err_submission;
-	} else {
-		/* Restore GT back to RPn for non-SLPC path */
-		intel_rps_lower_unslice(&uc_to_gt(uc)->rps);
 	}
 
 	drm_info(&i915->drm, "GuC submission %s\n",
-		 str_enabled_disabled(intel_uc_uses_guc_submission(uc)));
+		 enableddisabled(intel_uc_uses_guc_submission(uc)));
+
 	drm_info(&i915->drm, "GuC SLPC %s\n",
-		 str_enabled_disabled(intel_uc_uses_guc_slpc(uc)));
+		 enableddisabled(intel_uc_uses_guc_slpc(uc)));
 
 	return 0;
 
@@ -550,16 +556,6 @@ err_submission:
 err_log_capture:
 	__uc_capture_load_err_log(uc);
 err_out:
-#if IS_ENABLED(CONFIG_DRM_I915_CAPTURE_ERROR) && IS_ENABLED(CONFIG_DRM_I915_DEBUG_GEM)
-	if (!i915_error_injected()) {
-		drm_info(&i915->drm, "Dumping on GuC load failure...\n");
-		intel_klog_error_capture(uc_to_gt(uc), (intel_engine_mask_t) ~0U);
-	}
-#endif
-
-	/* Return GT back to RPn */
-	intel_rps_lower_unslice(&uc_to_gt(uc)->rps);
-
 	__uc_sanitize(uc);
 
 	if (!ret) {
@@ -583,6 +579,8 @@ static void __uc_fini_hw(struct intel_uc *uc)
 
 	if (intel_uc_uses_guc_submission(uc))
 		intel_guc_submission_disable(guc);
+
+	intel_guc_hwconfig_fini(&guc->hwconfig);
 
 	__uc_sanitize(uc);
 }
@@ -647,9 +645,9 @@ static int __vf_uc_init_hw(struct intel_uc *uc)
 
 	intel_guc_submission_enable(guc);
 
-	dev_info(i915->drm.dev, "%s firmware %s version %u.%u %s:%s\n",
-		 intel_uc_fw_type_repr(INTEL_UC_FW_TYPE_GUC), guc->fw.path,
-		 guc->fw.major_ver_found, guc->fw.minor_ver_found,
+	drm_info(&i915->drm, "%s firmware %s version %u.%u %s:%s\n",
+		 intel_uc_fw_type_repr(INTEL_UC_FW_TYPE_GUC), guc->fw.file_selected.path,
+		 guc->fw.file_selected.major_ver, guc->fw.file_selected.minor_ver,
 		 "submission", i915_iov_mode_to_string(IOV_MODE(i915)));
 
 	dev_info(i915->drm.dev, "%s firmware %s\n",

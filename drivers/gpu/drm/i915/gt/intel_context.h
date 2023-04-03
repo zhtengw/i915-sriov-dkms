@@ -211,8 +211,7 @@ static inline void intel_context_enter(struct intel_context *ce)
 
 static inline void intel_context_mark_active(struct intel_context *ce)
 {
-	lockdep_assert(lockdep_is_held(&ce->timeline->mutex) ||
-		       test_bit(CONTEXT_IS_PARKING, &ce->flags));
+	lockdep_assert_held(&ce->timeline->mutex);
 	++ce->active_count;
 }
 

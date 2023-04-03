@@ -4,7 +4,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/string_helpers.h>
 
 #include "intel_crtc.h"
 #include "intel_de.h"
@@ -16,10 +15,6 @@
 #include "intel_pps.h"
 #include "intel_snps_phy.h"
 #include "vlv_sideband.h"
-
-struct intel_dpll_funcs {
-	int (*crtc_compute_clock)(struct intel_crtc_state *crtc_state);
-};
 
 struct intel_limit {
 	struct {
@@ -254,12 +249,12 @@ static const struct intel_limit ilk_limits_dual_lvds_100m = {
 
 static const struct intel_limit intel_limits_vlv = {
 	 /*
-	  * These are based on the data rate limits (measured in fast clocks)
+	  * These are the data rate limits (measured in fast clocks)
 	  * since those are the strictest limits we have. The fast
 	  * clock and actual rate limits are more relaxed, so checking
 	  * them would make no difference.
 	  */
-	.dot = { .min = 25000, .max = 270000 },
+	.dot = { .min = 25000 * 5, .max = 270000 * 5 },
 	.vco = { .min = 4000000, .max = 6000000 },
 	.n = { .min = 1, .max = 7 },
 	.m1 = { .min = 2, .max = 3 },
@@ -270,12 +265,12 @@ static const struct intel_limit intel_limits_vlv = {
 
 static const struct intel_limit intel_limits_chv = {
 	/*
-	 * These are based on the data rate limits (measured in fast clocks)
+	 * These are the data rate limits (measured in fast clocks)
 	 * since those are the strictest limits we have.  The fast
 	 * clock and actual rate limits are more relaxed, so checking
 	 * them would make no difference.
 	 */
-	.dot = { .min = 25000, .max = 540000 },
+	.dot = { .min = 25000 * 5, .max = 540000 * 5},
 	.vco = { .min = 4800000, .max = 6480000 },
 	.n = { .min = 1, .max = 1 },
 	.m1 = { .min = 2, .max = 2 },
@@ -285,7 +280,8 @@ static const struct intel_limit intel_limits_chv = {
 };
 
 static const struct intel_limit intel_limits_bxt = {
-	.dot = { .min = 25000, .max = 594000 },
+	/* FIXME: find real dot limits */
+	.dot = { .min = 0, .max = INT_MAX },
 	.vco = { .min = 4800000, .max = 6700000 },
 	.n = { .min = 1, .max = 1 },
 	.m1 = { .min = 2, .max = 2 },
@@ -336,26 +332,26 @@ int i9xx_calc_dpll_params(int refclk, struct dpll *clock)
 int vlv_calc_dpll_params(int refclk, struct dpll *clock)
 {
 	clock->m = clock->m1 * clock->m2;
-	clock->p = clock->p1 * clock->p2 * 5;
+	clock->p = clock->p1 * clock->p2;
 	if (WARN_ON(clock->n == 0 || clock->p == 0))
 		return 0;
 	clock->vco = DIV_ROUND_CLOSEST(refclk * clock->m, clock->n);
 	clock->dot = DIV_ROUND_CLOSEST(clock->vco, clock->p);
 
-	return clock->dot;
+	return clock->dot / 5;
 }
 
 int chv_calc_dpll_params(int refclk, struct dpll *clock)
 {
 	clock->m = clock->m1 * clock->m2;
-	clock->p = clock->p1 * clock->p2 * 5;
+	clock->p = clock->p1 * clock->p2;
 	if (WARN_ON(clock->n == 0 || clock->p == 0))
 		return 0;
 	clock->vco = DIV_ROUND_CLOSEST_ULL(mul_u32_u32(refclk, clock->m),
 					   clock->n << 22);
 	clock->dot = DIV_ROUND_CLOSEST(clock->vco, clock->p);
 
-	return clock->dot;
+	return clock->dot / 5;
 }
 
 /*
@@ -424,7 +420,8 @@ i9xx_select_p2_div(const struct intel_limit *limit,
 
 /*
  * Returns a set of divisors for the desired target clock with the given
- * refclk, or FALSE.
+ * refclk, or FALSE.  The returned values represent the clock equation:
+ * reflck * (5 * (m1 + 2) + (m2 + 2)) / (n + 2) / p1 / p2.
  *
  * Target and reference clocks are specified in kHz.
  *
@@ -482,7 +479,8 @@ i9xx_find_best_dpll(const struct intel_limit *limit,
 
 /*
  * Returns a set of divisors for the desired target clock with the given
- * refclk, or FALSE.
+ * refclk, or FALSE.  The returned values represent the clock equation:
+ * reflck * (5 * (m1 + 2) + (m2 + 2)) / (n + 2) / p1 / p2.
  *
  * Target and reference clocks are specified in kHz.
  *
@@ -538,7 +536,8 @@ pnv_find_best_dpll(const struct intel_limit *limit,
 
 /*
  * Returns a set of divisors for the desired target clock with the given
- * refclk, or FALSE.
+ * refclk, or FALSE.  The returned values represent the clock equation:
+ * reflck * (5 * (m1 + 2) + (m2 + 2)) / (n + 2) / p1 / p2.
  *
  * Target and reference clocks are specified in kHz.
  *
@@ -637,7 +636,8 @@ static bool vlv_PLL_is_optimal(struct drm_device *dev, int target_freq,
 
 /*
  * Returns a set of divisors for the desired target clock with the given
- * refclk, or FALSE.
+ * refclk, or FALSE.  The returned values represent the clock equation:
+ * reflck * (5 * (m1 + 2) + (m2 + 2)) / (n + 2) / p1 / p2.
  */
 static bool
 vlv_find_best_dpll(const struct intel_limit *limit,
@@ -654,6 +654,8 @@ vlv_find_best_dpll(const struct intel_limit *limit,
 	int max_n = min(limit->n.max, refclk / 19200);
 	bool found = false;
 
+	target *= 5; /* fast clock */
+
 	memset(best_clock, 0, sizeof(*best_clock));
 
 	/* based on hardware requirement, prefer smaller n to precision */
@@ -661,7 +663,7 @@ vlv_find_best_dpll(const struct intel_limit *limit,
 		for (clock.p1 = limit->p1.max; clock.p1 >= limit->p1.min; clock.p1--) {
 			for (clock.p2 = limit->p2.p2_fast; clock.p2 >= limit->p2.p2_slow;
 			     clock.p2 -= clock.p2 > 10 ? 2 : 1) {
-				clock.p = clock.p1 * clock.p2 * 5;
+				clock.p = clock.p1 * clock.p2;
 				/* based on hardware requirement, prefer bigger m1,m2 values */
 				for (clock.m1 = limit->m1.min; clock.m1 <= limit->m1.max; clock.m1++) {
 					unsigned int ppm;
@@ -695,7 +697,8 @@ vlv_find_best_dpll(const struct intel_limit *limit,
 
 /*
  * Returns a set of divisors for the desired target clock with the given
- * refclk, or FALSE.
+ * refclk, or FALSE.  The returned values represent the clock equation:
+ * reflck * (5 * (m1 + 2) + (m2 + 2)) / (n + 2) / p1 / p2.
  */
 static bool
 chv_find_best_dpll(const struct intel_limit *limit,
@@ -721,6 +724,7 @@ chv_find_best_dpll(const struct intel_limit *limit,
 	 */
 	clock.n = 1;
 	clock.m1 = 2;
+	target *= 5;	/* fast clock */
 
 	for (clock.p1 = limit->p1.max; clock.p1 >= limit->p1.min; clock.p1--) {
 		for (clock.p2 = limit->p2.p2_fast;
@@ -728,7 +732,7 @@ chv_find_best_dpll(const struct intel_limit *limit,
 				clock.p2 -= clock.p2 > 10 ? 2 : 1) {
 			unsigned int error_ppm;
 
-			clock.p = clock.p1 * clock.p2 * 5;
+			clock.p = clock.p1 * clock.p2;
 
 			m2 = DIV_ROUND_CLOSEST_ULL(mul_u32_u32(target, clock.p * clock.n) << 22,
 						   refclk * clock.m1);
@@ -1396,14 +1400,6 @@ static const struct intel_dpll_funcs i8xx_dpll_funcs = {
 	.crtc_compute_clock = i8xx_crtc_compute_clock,
 };
 
-int intel_dpll_crtc_compute_clock(struct intel_crtc_state *crtc_state)
-{
-	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
-	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
-
-	return i915->dpll_funcs->crtc_compute_clock(crtc_state);
-}
-
 void
 intel_dpll_init_clock_hook(struct drm_i915_private *dev_priv)
 {
@@ -1827,7 +1823,7 @@ void chv_enable_pll(const struct intel_crtc_state *crtc_state)
 int vlv_force_pll_on(struct drm_i915_private *dev_priv, enum pipe pipe,
 		     const struct dpll *dpll)
 {
-	struct intel_crtc *crtc = intel_crtc_for_pipe(dev_priv, pipe);
+	struct intel_crtc *crtc = intel_get_crtc_for_pipe(dev_priv, pipe);
 	struct intel_crtc_state *crtc_state;
 
 	crtc_state = intel_crtc_state_alloc(crtc);
@@ -1937,7 +1933,7 @@ static void assert_pll(struct drm_i915_private *dev_priv,
 	cur_state = intel_de_read(dev_priv, DPLL(pipe)) & DPLL_VCO_ENABLE;
 	I915_STATE_WARN(cur_state != state,
 			"PLL state assertion failure (expected %s, current %s)\n",
-			str_on_off(state), str_on_off(cur_state));
+			onoff(state), onoff(cur_state));
 }
 
 void assert_pll_enabled(struct drm_i915_private *i915, enum pipe pipe)

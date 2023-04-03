@@ -107,7 +107,6 @@
  *
  */
 #include <linux/interrupt.h>
-#include <linux/string_helpers.h>
 
 #include "i915_drv.h"
 #include "i915_trace.h"
@@ -117,13 +116,11 @@
 #include "intel_context.h"
 #include "intel_engine_heartbeat.h"
 #include "intel_engine_pm.h"
-#include "intel_engine_regs.h"
 #include "intel_engine_stats.h"
 #include "intel_execlists_submission.h"
 #include "intel_gt.h"
 #include "intel_gt_irq.h"
 #include "intel_gt_pm.h"
-#include "intel_gt_regs.h"
 #include "intel_gt_requests.h"
 #include "intel_lrc.h"
 #include "intel_lrc_reg.h"
@@ -1334,11 +1331,11 @@ static void execlists_dequeue(struct intel_engine_cs *engine)
 		} else if (timeslice_expired(engine, last)) {
 			ENGINE_TRACE(engine,
 				     "expired:%s last=%llx:%lld, prio=%d, hint=%d, yield?=%s\n",
-				     str_yes_no(timer_expired(&execlists->timer)),
+				     yesno(timer_expired(&execlists->timer)),
 				     last->fence.context, last->fence.seqno,
 				     rq_prio(last),
 				     sched_engine->queue_priority_hint,
-				     str_yes_no(timeslice_yield(execlists, last)));
+				     yesno(timeslice_yield(execlists, last)));
 
 			/*
 			 * Consume this timeslice; ensure we start a new one.
@@ -1426,7 +1423,7 @@ static void execlists_dequeue(struct intel_engine_cs *engine)
 			     __i915_request_is_complete(rq) ? "!" :
 			     __i915_request_has_started(rq) ? "*" :
 			     "",
-			     str_yes_no(engine != ve->siblings[0]));
+			     yesno(engine != ve->siblings[0]));
 
 		WRITE_ONCE(ve->request, NULL);
 		WRITE_ONCE(ve->base.sched_engine->queue_priority_hint, INT_MIN);
@@ -1647,6 +1644,12 @@ cancel_port_requests(struct intel_engine_execlists * const execlists,
 	cancel_timer(&execlists->preempt);
 
 	return inactive;
+}
+
+static void invalidate_csb_entries(const u64 *first, const u64 *last)
+{
+	clflush((void *)first);
+	clflush((void *)last);
 }
 
 /*
@@ -1996,7 +1999,7 @@ process_csb(struct intel_engine_cs *engine, struct i915_request **inactive)
 	 * the wash as hardware, working or not, will need to do the
 	 * invalidation before.
 	 */
-	drm_clflush_virt_range(&buf[0], num_entries * sizeof(buf[0]));
+	invalidate_csb_entries(&buf[0], &buf[num_entries - 1]);
 
 	/*
 	 * We assume that any event reflects a change in context flow
@@ -2200,8 +2203,7 @@ struct execlists_capture {
 static void execlists_capture_work(struct work_struct *work)
 {
 	struct execlists_capture *cap = container_of(work, typeof(*cap), work);
-	const gfp_t gfp = __GFP_KSWAPD_RECLAIM | __GFP_RETRY_MAYFAIL |
-		__GFP_NOWARN;
+	const gfp_t gfp = GFP_KERNEL | __GFP_RETRY_MAYFAIL | __GFP_NOWARN;
 	struct intel_engine_cs *engine = cap->rq->engine;
 	struct intel_gt_coredump *gt = cap->error->gt;
 	struct intel_engine_capture_vma *vma;
@@ -2243,11 +2245,11 @@ static struct execlists_capture *capture_regs(struct intel_engine_cs *engine)
 	if (!cap->error)
 		goto err_cap;
 
-	cap->error->gt = intel_gt_coredump_alloc(engine->gt, gfp, CORE_DUMP_FLAG_NONE);
+	cap->error->gt = intel_gt_coredump_alloc(engine->gt, gfp);
 	if (!cap->error->gt)
 		goto err_gpu;
 
-	cap->error->gt->engine = intel_engine_coredump_alloc(engine, gfp, CORE_DUMP_FLAG_NONE);
+	cap->error->gt->engine = intel_engine_coredump_alloc(engine, gfp);
 	if (!cap->error->gt->engine)
 		goto err_gt;
 
@@ -2613,43 +2615,6 @@ static void execlists_context_cancel_request(struct intel_context *ce,
 				      current->comm);
 }
 
-static struct intel_context *
-execlists_create_parallel(struct intel_engine_cs **engines,
-			  unsigned int num_siblings,
-			  unsigned int width)
-{
-	struct intel_context *parent = NULL, *ce, *err;
-	int i;
-
-	GEM_BUG_ON(num_siblings != 1);
-
-	for (i = 0; i < width; ++i) {
-		ce = intel_context_create(engines[i]);
-		if (IS_ERR(ce)) {
-			err = ce;
-			goto unwind;
-		}
-
-		if (i == 0)
-			parent = ce;
-		else
-			intel_context_bind_parent_child(parent, ce);
-	}
-
-	parent->parallel.fence_context = dma_fence_context_alloc(1);
-
-	intel_context_set_nopreempt(parent);
-	for_each_child(parent, ce)
-		intel_context_set_nopreempt(ce);
-
-	return parent;
-
-unwind:
-	if (parent)
-		intel_context_put(parent);
-	return err;
-}
-
 static const struct intel_context_ops execlists_context_ops = {
 	.flags = COPS_HAS_INFLIGHT | COPS_RUNTIME_CYCLES,
 
@@ -2668,7 +2633,6 @@ static const struct intel_context_ops execlists_context_ops = {
 	.reset = lrc_reset,
 	.destroy = lrc_destroy,
 
-	.create_parallel = execlists_create_parallel,
 	.create_virtual = execlists_create_virtual,
 };
 
@@ -2795,9 +2759,8 @@ static void reset_csb_pointers(struct intel_engine_cs *engine)
 
 	/* Check that the GPU does indeed update the CSB entries! */
 	memset(execlists->csb_status, -1, (reset_value + 1) * sizeof(u64));
-	drm_clflush_virt_range(execlists->csb_status,
-			       execlists->csb_size *
-			       sizeof(execlists->csb_status));
+	invalidate_csb_entries(&execlists->csb_status[0],
+			       &execlists->csb_status[reset_value]);
 
 	/* Once more for luck and our trusty paranoia */
 	ENGINE_WRITE(engine, RING_CONTEXT_STATUS_PTR,
@@ -2841,7 +2804,7 @@ static void execlists_sanitize(struct intel_engine_cs *engine)
 	sanitize_hwsp(engine);
 
 	/* And scrub the dirty cachelines for the HWSP */
-	drm_clflush_virt_range(engine->status_page.addr, PAGE_SIZE);
+	clflush_cache_range(engine->status_page.addr, PAGE_SIZE);
 
 	intel_engine_reset_pinned_contexts(engine);
 }
@@ -2920,8 +2883,28 @@ static int execlists_resume(struct intel_engine_cs *engine)
 
 	enable_execlists(engine);
 
-	if (engine->flags & I915_ENGINE_FIRST_RENDER_COMPUTE)
-		xehp_enable_ccs_engines(engine);
+	return 0;
+}
+
+static int gen12_rcs_resume(struct intel_engine_cs *engine)
+{
+	int ret;
+
+	ret = execlists_resume(engine);
+	if (ret)
+		return ret;
+
+	/*
+	 * Multi Context programming.
+	 * just need to program this register once no matter how many CCS
+	 * engines there are. Since some of the CCS engines might be fused off,
+	 * we can't do this as part of the init of a specific CCS and we do
+	 * it during RCS init instead. RCS and all CCS engines are reset
+	 * together, so post-reset re-init is covered as well.
+	 */
+	if (CCS_MASK(engine->gt))
+		intel_uncore_write(engine->uncore, GEN12_RCU_MODE,
+			   _MASKED_BIT_ENABLE(GEN12_RCU_MODE_CCS_ENABLE));
 
 	return 0;
 }
@@ -2966,8 +2949,9 @@ reset_csb(struct intel_engine_cs *engine, struct i915_request **inactive)
 {
 	struct intel_engine_execlists * const execlists = &engine->execlists;
 
-	drm_clflush_virt_range(execlists->csb_write,
-			       sizeof(execlists->csb_write[0]));
+	mb(); /* paranoia: read the CSB pointers from after the reset */
+	clflush(execlists->csb_write);
+	mb();
 
 	inactive = process_csb(engine, inactive); /* drain preemption events */
 
@@ -3479,6 +3463,9 @@ static void rcs_submission_override(struct intel_engine_cs *engine)
 		engine->emit_fini_breadcrumb = gen8_emit_fini_breadcrumb_rcs;
 		break;
 	}
+
+	if (engine->class == RENDER_CLASS)
+		engine->resume = gen12_rcs_resume;
 }
 
 int intel_execlists_submission_setup(struct intel_engine_cs *engine)
@@ -3495,7 +3482,8 @@ int intel_execlists_submission_setup(struct intel_engine_cs *engine)
 	logical_ring_default_vfuncs(engine);
 	logical_ring_default_irqs(engine);
 
-	if (engine->flags & I915_ENGINE_HAS_RCS_REG_STATE)
+	if (engine->class == RENDER_CLASS ||
+	    engine->class == COMPUTE_CLASS)
 		rcs_submission_override(engine);
 
 	lrc_init_wa_ctx(engine);
@@ -3518,7 +3506,7 @@ int intel_execlists_submission_setup(struct intel_engine_cs *engine)
 		(u64 *)&engine->status_page.addr[I915_HWS_CSB_BUF0_INDEX];
 
 	execlists->csb_write =
-		&engine->status_page.addr[INTEL_HWS_CSB_WRITE_INDEX(i915)];
+		&engine->status_page.addr[intel_hws_csb_write_index(i915)];
 
 	if (GRAPHICS_VER(i915) < 11)
 		execlists->csb_size = GEN8_CSB_ENTRIES;

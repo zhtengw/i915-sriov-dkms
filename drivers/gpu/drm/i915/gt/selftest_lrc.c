@@ -5,8 +5,6 @@
 
 #include <linux/prime_numbers.h>
 
-#include "gem/i915_gem_internal.h"
-
 #include "i915_selftest.h"
 #include "intel_engine_heartbeat.h"
 #include "intel_engine_pm.h"
@@ -1849,5 +1847,5 @@ int intel_lrc_live_selftests(struct drm_i915_private *i915)
 	if (!HAS_LOGICAL_RING_CONTEXTS(i915))
 		return 0;
 
-	return intel_gt_live_subtests(tests, to_gt(i915));
+	return intel_gt_live_subtests(tests, &i915->gt);
 }

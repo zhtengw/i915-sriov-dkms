@@ -6,28 +6,11 @@
 #include <linux/slab.h> /* fault-inject.h is not standalone! */
 
 #include <linux/fault-inject.h>
-#include <linux/sched/mm.h>
 
-#include <drm/drm_cache.h>
-
-#include "gem/i915_gem_internal.h"
 #include "gem/i915_gem_lmem.h"
 #include "i915_trace.h"
-#include "i915_utils.h"
 #include "intel_gt.h"
-#include "intel_gt_regs.h"
 #include "intel_gtt.h"
-
-
-static bool intel_ggtt_update_needs_vtd_wa(struct drm_i915_private *i915)
-{
-	return IS_BROXTON(i915) && i915_vtd_active(i915);
-}
-
-bool intel_vm_no_concurrent_access_wa(struct drm_i915_private *i915)
-{
-	return IS_CHERRYVIEW(i915) || intel_ggtt_update_needs_vtd_wa(i915);
-}
 
 struct drm_i915_gem_object *alloc_pt_lmem(struct i915_address_space *vm, int sz)
 {
@@ -45,8 +28,7 @@ struct drm_i915_gem_object *alloc_pt_lmem(struct i915_address_space *vm, int sz)
 	 * used the passed in size for the page size, which should ensure it
 	 * also has the same alignment.
 	 */
-	obj = __i915_gem_object_create_lmem_with_ps(vm->i915, sz, sz,
-						    vm->lmem_pt_obj_flags);
+	obj = __i915_gem_object_create_lmem_with_ps(vm->i915, sz, sz, 0);
 	/*
 	 * Ensure all paging structures for this vm share the same dma-resv
 	 * object underneath, with the idea that one object_lock() will lock
@@ -109,52 +91,27 @@ int map_pt_dma_locked(struct i915_address_space *vm, struct drm_i915_gem_object 
 	return 0;
 }
 
-static void clear_vm_list(struct list_head *list)
+void __i915_vm_close(struct i915_address_space *vm)
 {
 	struct i915_vma *vma, *vn;
 
-	list_for_each_entry_safe(vma, vn, list, vm_link) {
+	if (!atomic_dec_and_mutex_lock(&vm->open, &vm->mutex))
+		return;
+
+	list_for_each_entry_safe(vma, vn, &vm->bound_list, vm_link) {
 		struct drm_i915_gem_object *obj = vma->obj;
 
-		if (!i915_gem_object_get_rcu(obj)) {
-			/*
-			 * Object is dying, but has not yet cleared its
-			 * vma list.
-			 * Unbind the dying vma to ensure our list
-			 * is completely drained. We leave the destruction to
-			 * the object destructor to avoid the vma
-			 * disappearing under it.
-			 */
-			atomic_and(~I915_VMA_PIN_MASK, &vma->flags);
-			WARN_ON(__i915_vma_unbind(vma));
+		/* Keep the obj (and hence the vma) alive as _we_ destroy it */
+		if (!kref_get_unless_zero(&obj->base.refcount))
+			continue;
 
-			/* Remove from the unbound list */
-			list_del_init(&vma->vm_link);
+		atomic_and(~I915_VMA_PIN_MASK, &vma->flags);
+		WARN_ON(__i915_vma_unbind(vma));
+		__i915_vma_put(vma);
 
-			/*
-			 * Delay the vm and vm mutex freeing until the
-			 * object is done with destruction.
-			 */
-			i915_vm_resv_get(vma->vm);
-			vma->vm_ddestroy = true;
-		} else {
-			i915_vma_destroy_locked(vma);
-			i915_gem_object_put(obj);
-		}
-
+		i915_gem_object_put(obj);
 	}
-}
-
-static void __i915_vm_close(struct i915_address_space *vm)
-{
-	mutex_lock(&vm->mutex);
-
-	clear_vm_list(&vm->bound_list);
-	clear_vm_list(&vm->unbound_list);
-
-	/* Check for must-fix unanticipated side-effects */
 	GEM_BUG_ON(!list_empty(&vm->bound_list));
-	GEM_BUG_ON(!list_empty(&vm->unbound_list));
 
 	mutex_unlock(&vm->mutex);
 }
@@ -176,6 +133,7 @@ int i915_vm_lock_objects(struct i915_address_space *vm,
 void i915_address_space_fini(struct i915_address_space *vm)
 {
 	drm_mm_takedown(&vm->mm);
+	mutex_destroy(&vm->mutex);
 }
 
 /**
@@ -183,8 +141,7 @@ void i915_address_space_fini(struct i915_address_space *vm)
  * @kref: Pointer to the &i915_address_space.resv_ref member.
  *
  * This function is called when the last lock sharer no longer shares the
- * &i915_address_space._resv lock, and also if we raced when
- * destroying a vma by the vma destruction
+ * &i915_address_space._resv lock.
  */
 void i915_vm_resv_release(struct kref *kref)
 {
@@ -192,8 +149,6 @@ void i915_vm_resv_release(struct kref *kref)
 		container_of(kref, typeof(*vm), resv_ref);
 
 	dma_resv_fini(&vm->_resv);
-	mutex_destroy(&vm->mutex);
-
 	kfree(vm);
 }
 
@@ -201,11 +156,6 @@ static void __i915_vm_release(struct work_struct *work)
 {
 	struct i915_address_space *vm =
 		container_of(work, struct i915_address_space, release_work);
-
-	__i915_vm_close(vm);
-
-	/* Synchronize async unbinds. */
-	i915_vma_resource_bind_dep_sync_all(vm);
 
 	vm->cleanup(vm);
 	i915_address_space_fini(vm);
@@ -235,8 +185,8 @@ void i915_address_space_init(struct i915_address_space *vm, int subclass)
 	if (!kref_read(&vm->resv_ref))
 		kref_init(&vm->resv_ref);
 
-	vm->pending_unbind = RB_ROOT_CACHED;
 	INIT_WORK(&vm->release_work, __i915_vm_release);
+	atomic_set(&vm->open, 1);
 
 	/*
 	 * The vm->mutex must be reclaim safe (for use in the shrinker).
@@ -265,23 +215,22 @@ void i915_address_space_init(struct i915_address_space *vm, int subclass)
 
 	GEM_BUG_ON(!vm->total);
 	drm_mm_init(&vm->mm, 0, vm->total);
-
-	memset64(vm->min_alignment, I915_GTT_MIN_ALIGNMENT,
-		 ARRAY_SIZE(vm->min_alignment));
-
-	if (HAS_64K_PAGES(vm->i915) && NEEDS_COMPACT_PT(vm->i915) &&
-	    subclass == VM_CLASS_PPGTT) {
-		vm->min_alignment[INTEL_MEMORY_LOCAL] = I915_GTT_PAGE_SIZE_2M;
-		vm->min_alignment[INTEL_MEMORY_STOLEN_LOCAL] = I915_GTT_PAGE_SIZE_2M;
-	} else if (HAS_64K_PAGES(vm->i915)) {
-		vm->min_alignment[INTEL_MEMORY_LOCAL] = I915_GTT_PAGE_SIZE_64K;
-		vm->min_alignment[INTEL_MEMORY_STOLEN_LOCAL] = I915_GTT_PAGE_SIZE_64K;
-	}
-
 	vm->mm.head_node.color = I915_COLOR_UNEVICTABLE;
 
 	INIT_LIST_HEAD(&vm->bound_list);
-	INIT_LIST_HEAD(&vm->unbound_list);
+}
+
+void clear_pages(struct i915_vma *vma)
+{
+	GEM_BUG_ON(!vma->pages);
+
+	if (vma->pages != vma->obj->mm.pages) {
+		sg_free_table(vma->pages);
+		kfree(vma->pages);
+	}
+	vma->pages = NULL;
+
+	memset(&vma->page_sizes, 0, sizeof(vma->page_sizes));
 }
 
 void *__px_vaddr(struct drm_i915_gem_object *p)
@@ -310,7 +259,7 @@ fill_page_dma(struct drm_i915_gem_object *p, const u64 val, unsigned int count)
 	void *vaddr = __px_vaddr(p);
 
 	memset64(vaddr, val, count);
-	drm_clflush_virt_range(vaddr, PAGE_SIZE);
+	clflush_cache_range(vaddr, PAGE_SIZE);
 }
 
 static void poison_scratch_page(struct drm_i915_gem_object *scratch)
@@ -323,7 +272,6 @@ static void poison_scratch_page(struct drm_i915_gem_object *scratch)
 		val = POISON_FREE;
 
 	memset(vaddr, val, scratch->base.size);
-	drm_clflush_virt_range(vaddr, scratch->base.size);
 }
 
 int setup_scratch_page(struct i915_address_space *vm)

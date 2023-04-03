@@ -7,14 +7,11 @@
 #include "gt/intel_gt.h"
 #include "gt/intel_gt_irq.h"
 #include "gt/intel_gt_pm_irq.h"
-#include "gt/intel_gt_regs.h"
 #include "intel_guc.h"
-#include "intel_guc_ads.h"
-#include "intel_guc_capture.h"
 #include "intel_guc_slpc.h"
+#include "intel_guc_ads.h"
 #include "intel_guc_submission.h"
 #include "i915_drv.h"
-#include "i915_irq.h"
 
 #ifdef CONFIG_DRM_I915_DEBUG_GUC
 #define GUC_DEBUG(_guc, _fmt, ...) \
@@ -310,41 +307,6 @@ static u32 guc_ctl_wa_flags(struct intel_guc *guc)
 	    GRAPHICS_VER_FULL(gt->i915) < IP_VER(12, 50))
 		flags |= GUC_WA_POLLCS;
 
-	/* Wa_16011759253:dg2_g10:a0 */
-	if (IS_DG2_GRAPHICS_STEP(gt->i915, G10, STEP_A0, STEP_B0))
-		flags |= GUC_WA_GAM_CREDITS;
-
-	/* Wa_14014475959:dg2 */
-	if (IS_DG2(gt->i915))
-		flags |= GUC_WA_HOLD_CCS_SWITCHOUT;
-
-	/*
-	 * Wa_14012197797:dg2_g10:a0,dg2_g11:a0
-	 * Wa_22011391025:dg2_g10,dg2_g11,dg2_g12
-	 *
-	 * The same WA bit is used for both and 22011391025 is applicable to
-	 * all DG2.
-	 */
-	if (IS_DG2(gt->i915))
-		flags |= GUC_WA_DUAL_QUEUE;
-
-	/* Wa_22011802037: graphics version 12 */
-	if (GRAPHICS_VER(gt->i915) == 12)
-		flags |= GUC_WA_PRE_PARSER;
-
-	/* Wa_16011777198:dg2 */
-	if (IS_DG2_GRAPHICS_STEP(gt->i915, G10, STEP_A0, STEP_C0) ||
-	    IS_DG2_GRAPHICS_STEP(gt->i915, G11, STEP_A0, STEP_B0))
-		flags |= GUC_WA_RCS_RESET_BEFORE_RC6;
-
-	/*
-	 * Wa_22012727170:dg2_g10[a0-c0), dg2_g11[a0..)
-	 * Wa_22012727685:dg2_g11[a0..)
-	 */
-	if (IS_DG2_GRAPHICS_STEP(gt->i915, G10, STEP_A0, STEP_C0) ||
-	    IS_DG2_GRAPHICS_STEP(gt->i915, G11, STEP_A0, STEP_FOREVER))
-		flags |= GUC_WA_CONTEXT_ISOLATION;
-
 	return flags;
 }
 
@@ -432,14 +394,9 @@ static int __guc_init(struct intel_guc *guc)
 	if (ret)
 		goto err_fw;
 
-	ret = intel_guc_capture_init(guc);
-	if (ret)
-		goto err_log;
-
 	ret = intel_guc_ads_create(guc);
 	if (ret)
-		goto err_capture;
-
+		goto err_log;
 	GEM_BUG_ON(!guc->ads_vma);
 
 	ret = intel_guc_ct_init(&guc->ct);
@@ -478,8 +435,6 @@ err_ct:
 	intel_guc_ct_fini(&guc->ct);
 err_ads:
 	intel_guc_ads_destroy(guc);
-err_capture:
-	intel_guc_capture_destroy(guc);
 err_log:
 	intel_guc_log_destroy(&guc->log);
 err_fw:
@@ -507,7 +462,6 @@ static void __guc_fini(struct intel_guc *guc)
 	intel_guc_ct_fini(&guc->ct);
 
 	intel_guc_ads_destroy(guc);
-	intel_guc_capture_destroy(guc);
 	intel_guc_log_destroy(&guc->log);
 	intel_uc_fw_fini(&guc->fw);
 }
@@ -838,8 +792,7 @@ struct i915_vma *intel_guc_allocate_vma(struct intel_guc *guc, u32 size)
 	if (HAS_LMEM(gt->i915))
 		obj = i915_gem_object_create_lmem(gt->i915, size,
 						  I915_BO_ALLOC_CPU_CLEAR |
-						  I915_BO_ALLOC_CONTIGUOUS |
-						  I915_BO_ALLOC_PM_EARLY);
+						  I915_BO_ALLOC_CONTIGUOUS);
 	else
 		obj = i915_gem_object_create_shmem(gt->i915, size);
 
@@ -950,6 +903,35 @@ int intel_guc_self_cfg64(struct intel_guc *guc, u16 key, u64 value)
 	return __guc_self_cfg(guc, key, 2, value);
 }
 
+static long must_wait_woken(struct wait_queue_entry *wq_entry, long timeout)
+{
+	/*
+	 * This is equivalent to wait_woken() with the exception that
+	 * we do not wake up early if the kthread task has been completed.
+	 * As we are called from page reclaim in any task context,
+	 * we may be invoked from stopped kthreads, but we *must*
+	 * complete the wait from the HW .
+	 *
+	 * A second problem is that since we are called under reclaim
+	 * and wait_woken() inspected the thread state, it makes an invalid
+	 * assumption that all PF_KTHREAD tasks have set_kthread_struct()
+	 * called upon them, and will trigger a GPF in is_kthread_should_stop().
+	 */
+	do {
+		set_current_state(TASK_INTERRUPTIBLE);
+		if (wq_entry->flags & WQ_FLAG_WOKEN)
+			break;
+
+		timeout = schedule_timeout(timeout);
+	} while (timeout);
+	__set_current_state(TASK_RUNNING);
+
+	/* See wait_woken() and woken_wake_function() */
+	smp_store_mb(wq_entry->flags, wq_entry->flags & ~WQ_FLAG_WOKEN);
+
+	return timeout;
+}
+
 static int guc_send_invalidate_tlb(struct intel_guc *guc, u32 *action, u32 size)
 {
 	struct intel_guc_tlb_wait _wq, *wq = &_wq;
@@ -1000,7 +982,7 @@ static int guc_send_invalidate_tlb(struct intel_guc *guc, u32 *action, u32 size)
  * queued in CT buffer.
  */
 #define OUTSTANDING_GUC_TIMEOUT_PERIOD  (HZ)
-	if (!wait_woken(&wait, TASK_UNINTERRUPTIBLE,
+	if (!must_wait_woken(&wait,
 			OUTSTANDING_GUC_TIMEOUT_PERIOD)) {
 		/*
 		 * XXX: Failure of tlb invalidation is critical and would

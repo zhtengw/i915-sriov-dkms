@@ -3,12 +3,9 @@
  * Copyright © 2016-2018 Intel Corporation
  */
 
-#include <drm/drm_cache.h>
-
-#include "gem/i915_gem_internal.h"
+#include "i915_drv.h"
 
 #include "i915_active.h"
-#include "i915_drv.h"
 #include "i915_syncmap.h"
 #include "intel_gt.h"
 #include "intel_ring.h"

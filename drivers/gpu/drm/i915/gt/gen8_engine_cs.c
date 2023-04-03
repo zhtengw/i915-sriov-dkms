@@ -7,6 +7,7 @@
 #include "i915_drv.h"
 #include "intel_gpu_commands.h"
 #include "intel_lrc.h"
+#include "intel_gpu_commands.h"
 #include "intel_ring.h"
 
 int gen8_emit_flush_rcs(struct i915_request *rq, u32 mode)
@@ -42,7 +43,7 @@ int gen8_emit_flush_rcs(struct i915_request *rq, u32 mode)
 			vf_flush_wa = true;
 
 		/* WaForGAMHang:kbl */
-		if (IS_KBL_GRAPHICS_STEP(rq->engine->i915, 0, STEP_C0))
+		if (IS_KBL_GT_STEP(rq->engine->i915, 0, STEP_C0))
 			dc_flush_wa = true;
 	}
 
@@ -197,7 +198,7 @@ int gen12_emit_flush_rcs(struct i915_request *rq, u32 mode)
 		flags |= PIPE_CONTROL_CS_STALL;
 
 		if (engine->class == COMPUTE_CLASS)
-			flags &= ~PIPE_CONTROL_3D_FLAGS;
+			flags &= ~PIPE_CONTROL_RENDER_ONLY_FLAGS;
 
 		cs = intel_ring_begin(rq, 6);
 		if (IS_ERR(cs))
@@ -211,7 +212,7 @@ int gen12_emit_flush_rcs(struct i915_request *rq, u32 mode)
 
 	if (mode & EMIT_INVALIDATE) {
 		u32 flags = 0;
-		u32 *cs, count;
+		u32 *cs;
 
 		flags |= PIPE_CONTROL_COMMAND_CACHE_INVALIDATE;
 		flags |= PIPE_CONTROL_TLB_INVALIDATE;
@@ -227,14 +228,9 @@ int gen12_emit_flush_rcs(struct i915_request *rq, u32 mode)
 		flags |= PIPE_CONTROL_CS_STALL;
 
 		if (engine->class == COMPUTE_CLASS)
-			flags &= ~PIPE_CONTROL_3D_FLAGS;
+			flags &= ~PIPE_CONTROL_RENDER_ONLY_FLAGS;
 
-		if (!HAS_FLAT_CCS(rq->engine->i915))
-			count = 8 + 4;
-		else
-			count = 8;
-
-		cs = intel_ring_begin(rq, count);
+		cs = intel_ring_begin(rq, 8 + 4);
 		if (IS_ERR(cs))
 			return PTR_ERR(cs);
 
@@ -583,43 +579,6 @@ static u32 *gen12_emit_preempt_busywait(struct i915_request *rq, u32 *cs)
 	return cs;
 }
 
-/* Wa_14014475959:dg2 */
-#define CCS_SEMAPHORE_PPHWSP_OFFSET	0x540
-static u32 ccs_semaphore_offset(struct i915_request *rq)
-{
-	return i915_ggtt_offset(rq->context->state) +
-		(LRC_PPHWSP_PN * PAGE_SIZE) + CCS_SEMAPHORE_PPHWSP_OFFSET;
-}
-
-/* Wa_14014475959:dg2 */
-static u32 *ccs_emit_wa_busywait(struct i915_request *rq, u32 *cs)
-{
-	int i;
-
-	*cs++ = MI_ATOMIC_INLINE | MI_ATOMIC_GLOBAL_GTT | MI_ATOMIC_CS_STALL |
-		MI_ATOMIC_MOVE;
-	*cs++ = ccs_semaphore_offset(rq);
-	*cs++ = 0;
-	*cs++ = 1;
-
-	/*
-	 * When MI_ATOMIC_INLINE_DATA set this command must be 11 DW + (1 NOP)
-	 * to align. 4 DWs above + 8 filler DWs here.
-	 */
-	for (i = 0; i < 8; ++i)
-		*cs++ = 0;
-
-	*cs++ = MI_SEMAPHORE_WAIT |
-		MI_SEMAPHORE_GLOBAL_GTT |
-		MI_SEMAPHORE_POLL |
-		MI_SEMAPHORE_SAD_EQ_SDD;
-	*cs++ = 0;
-	*cs++ = ccs_semaphore_offset(rq);
-	*cs++ = 0;
-
-	return cs;
-}
-
 static __always_inline u32*
 gen12_emit_fini_breadcrumb_tail(struct i915_request *rq, u32 *cs)
 {
@@ -629,10 +588,6 @@ gen12_emit_fini_breadcrumb_tail(struct i915_request *rq, u32 *cs)
 	if (intel_engine_has_semaphores(rq->engine) &&
 	    !intel_uc_uses_guc_submission(&rq->engine->gt->uc))
 		cs = gen12_emit_preempt_busywait(rq, cs);
-
-	/* Wa_14014475959:dg2 */
-	if (intel_engine_uses_wa_hold_ccs_switchout(rq->engine))
-		cs = ccs_emit_wa_busywait(rq, cs);
 
 	rq->tail = intel_ring_offset(rq, cs);
 	assert_ring_tail_valid(rq->ring, rq->tail);
@@ -649,21 +604,18 @@ u32 *gen12_emit_fini_breadcrumb_xcs(struct i915_request *rq, u32 *cs)
 
 u32 *gen12_emit_fini_breadcrumb_rcs(struct i915_request *rq, u32 *cs)
 {
-	struct drm_i915_private *i915 = rq->engine->i915;
 	u32 flags = (PIPE_CONTROL_CS_STALL |
 		     PIPE_CONTROL_TILE_CACHE_FLUSH |
 		     PIPE_CONTROL_FLUSH_L3 |
 		     PIPE_CONTROL_RENDER_TARGET_CACHE_FLUSH |
 		     PIPE_CONTROL_DEPTH_CACHE_FLUSH |
+		     /* Wa_1409600907:tgl,adl-p */
+		     PIPE_CONTROL_DEPTH_STALL |
 		     PIPE_CONTROL_DC_FLUSH_ENABLE |
 		     PIPE_CONTROL_FLUSH_ENABLE);
 
-	if (GRAPHICS_VER(i915) == 12 && GRAPHICS_VER_FULL(i915) < IP_VER(12, 50))
-		/* Wa_1409600907 */
-		flags |= PIPE_CONTROL_DEPTH_STALL;
-
 	if (rq->engine->class == COMPUTE_CLASS)
-		flags &= ~PIPE_CONTROL_3D_FLAGS;
+		flags &= ~PIPE_CONTROL_RENDER_ONLY_FLAGS;
 
 	cs = gen12_emit_ggtt_write_rcs(cs,
 				       rq->fence.seqno,

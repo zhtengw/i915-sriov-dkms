@@ -9,7 +9,7 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 
-#include "i915_reg_defs.h"
+#include "i915_reg.h"
 
 /* Definitions of GuC H/W registers, bits, etc */
 
@@ -96,6 +96,7 @@
 
 #define GUC_SHIM_CONTROL2		_MMIO(0xc068)
 #define   GUC_IS_PRIVILEGED		(1<<29)
+#define   GSC_LOADS_HUC			(1<<30)
 
 #define GUC_SEND_INTERRUPT		_MMIO(0xc4c8)
 #define   GUC_SEND_TRIGGER		  (1<<0)

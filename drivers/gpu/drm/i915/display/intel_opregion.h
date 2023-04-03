@@ -29,14 +29,12 @@
 #include <linux/pci.h>
 
 struct drm_i915_private;
-struct intel_connector;
 struct intel_encoder;
 
 struct opregion_header;
 struct opregion_acpi;
 struct opregion_swsci;
 struct opregion_asle;
-struct opregion_asle_ext;
 
 struct intel_opregion {
 	struct opregion_header *header;
@@ -45,7 +43,6 @@ struct intel_opregion {
 	u32 swsci_gbda_sub_functions;
 	u32 swsci_sbcb_sub_functions;
 	struct opregion_asle *asle;
-	struct opregion_asle_ext *asle_ext;
 	void *rvda;
 	void *vbt_firmware;
 	const void *vbt;
@@ -74,7 +71,6 @@ int intel_opregion_notify_encoder(struct intel_encoder *intel_encoder,
 int intel_opregion_notify_adapter(struct drm_i915_private *dev_priv,
 				  pci_power_t state);
 int intel_opregion_get_panel_type(struct drm_i915_private *dev_priv);
-struct edid *intel_opregion_get_edid(struct intel_connector *connector);
 
 #else /* CONFIG_ACPI*/
 
@@ -119,12 +115,6 @@ intel_opregion_notify_adapter(struct drm_i915_private *dev, pci_power_t state)
 static inline int intel_opregion_get_panel_type(struct drm_i915_private *dev)
 {
 	return -ENODEV;
-}
-
-static inline struct edid *
-intel_opregion_get_edid(struct intel_connector *connector)
-{
-	return NULL;
 }
 
 #endif /* CONFIG_ACPI */
