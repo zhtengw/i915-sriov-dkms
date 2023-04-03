@@ -328,6 +328,11 @@ i915-$(CONFIG_DRM_I915_SELFTEST) += \
 # virtual gpu code
 i915-y += i915_vgpu.o
 
+ifeq ($(CONFIG_DRM_I915_GVT),y)
+i915-y += intel_gvt.o
+include $(KBUILD_EXTMOD)/drivers/gpu/drm/i915/gvt/Makefile
+endif
+
 obj-$(CONFIG_DRM_I915) += i915.o
 
 CFLAGS_i915_trace_points.o := -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915
@@ -347,6 +352,7 @@ LINUXINCLUDE := \
     -I$(INC_INCPATH)/trace \
     -I$(INC_INCPATH)/ \
     -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915 \
+    -I$(KBUILD_EXTMOD)/drivers/gpu/drm/i915/gvt \
     $(LINUXINCLUDE)
 
 obj-m := i915.o
